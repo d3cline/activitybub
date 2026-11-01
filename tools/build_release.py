@@ -13,6 +13,7 @@ import subprocess
 import sys
 import ssl
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -42,7 +43,7 @@ def source_archive(destination):
 def collect_licenses(destination):
     folder=destination/"LICENSES"
     folder.mkdir(exist_ok=True)
-    for name in ("PySide6_Essentials","shiboken6","psutil","pyinstaller"):
+    for name in ("PySide6_Essentials","shiboken6","psutil","Pillow","pyinstaller"):
         package=importlib.metadata.distribution(name)
         found=False
         for entry in package.files or []:
@@ -92,11 +93,17 @@ def main():
     if not args.source_only:
         if sys.platform not in ("linux","win32"):
             raise SystemExit("Native builds are configured for Linux and Windows only")
+        # Fresh staging also avoids stale or partially restored symlinks from
+        # earlier portable builds colliding during PyInstaller's COLLECT step.
+        (ROOT/"build").mkdir(exist_ok=True)
+        staging=Path(tempfile.mkdtemp(prefix="native-",dir=ROOT/"build"))
         command=[sys.executable,"-m","PyInstaller","--noconfirm","--clean","--onedir","--windowed",
+                 "--distpath",str(staging/"dist"),"--workpath",str(staging/"work"),"--specpath",str(staging),
                  "--name","Activity-Bub","--collect-data","activity_bub",
                  "--exclude-module","tkinter","--exclude-module","PySide6.QtWebEngineCore",
                  "--exclude-module","PySide6.QtWebEngineWidgets","--exclude-module","PySide6.QtQml",
-                 "--exclude-module","PySide6.QtQuick"]
+                 "--exclude-module","PySide6.QtQuick","--exclude-module","PIL.ImageQt",
+                 "--exclude-module","PIL.ImageTk","--exclude-module","PIL.ImageShow"]
         # Some Python distributions load companion public-CA files from beside
         # ssl.py. Keep those data files with the frozen module, preserving its
         # existing TLS behavior. Never bundle private keys or alter trust checks.
@@ -109,13 +116,13 @@ def main():
             command += ["--icon",str(ROOT/"activity_bub/assets/activity-bub.ico")]
         command.append(str(ROOT/"run_app.py"))
         subprocess.run(command,cwd=ROOT,check=True)
-        app_dir=ROOT/"dist"/"Activity-Bub"
+        app_dir=staging/"dist"/"Activity-Bub"
         collect_licenses(app_dir)
         shutil.copy2(ROOT/"docs/PORTABLE.md",app_dir/"READ-ME-FIRST.md")
         build_info={"application":version,"python":platform.python_version(),"platform":platform.platform(),
                     "libc":platform.libc_ver(),
                     "architecture":platform.machine(),"dependencies":{name:importlib.metadata.version(name)
-                    for name in ("PySide6_Essentials","shiboken6","psutil","pyinstaller")}}
+                    for name in ("PySide6_Essentials","shiboken6","psutil","Pillow","pyinstaller")}}
         (app_dir/"BUILD-INFO.json").write_text(json.dumps(build_info,indent=2)+"\n")
         executable=app_dir/("Activity-Bub.exe" if sys.platform=="win32" else "Activity-Bub")
         env=dict(os.environ)

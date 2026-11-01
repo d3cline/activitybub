@@ -1,5 +1,9 @@
 # Reporting security issues
 
+Read [the 0.3.2 security review](docs/SECURITY-AUDIT.md) for verified protections,
+the image-processing boundary, platform limits, and remaining risks. This app
+has not received an independent penetration test or security certification.
+
 For a vulnerability, use the repository's private security advisory feature if
 enabled. Avoid posting private URLs, credentials, local database files, or other
 users' post content in a public issue. If private reporting is unavailable,

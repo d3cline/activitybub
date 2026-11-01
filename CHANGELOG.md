@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2
+
+- Security hardening: disposable Linux image workers with an architecture-checked
+  syscall allowlist, no-new-privileges, resource limits, bounded pipes, no
+  inherited secrets, and raw RGBA-only output to the GUI.
+- Metadata, embedded file trailers, and additional frames do not cross the
+  preview boundary. Only five explicit raster formats are accepted.
+- Remote previews fail closed when isolation is unsupported or cannot start;
+  Windows/macOS previews are disabled pending equivalent OS restrictions.
+- Pillow 13 performs isolated raster decoding; Qt never receives downloaded
+  image containers. Source installations now require Python 3.11+ and Qt 6.12+.
+- Reject ambiguous URLs, control characters, private-address IPv6 translations,
+  non-finite JSON values, and JSON nesting beyond 64 levels.
+- Post reader document/resource loading and drops are disabled. Remote tooltips
+  and error dialogs cannot inject rich markup. SQL values remain parameterized.
+- Security regression tests and a written threat model with residual risks.
+
 ## 0.3.1
 
 - Direction-aware preview preloading: visible posts first, two viewports ahead,

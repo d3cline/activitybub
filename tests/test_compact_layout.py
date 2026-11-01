@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 from activity_bub.demo import artwork,populate
 from activity_bub.store import Store
 from activity_bub.ui import MAX_FEED_WIDTH,STYLE,Window
-from tests.test_feed_images import image_bytes,make_post
+from tests.test_feed_images import local_pixels,make_post
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +32,7 @@ def test_full_portrait_card_fits_centered_reading_area(app,tmp_path,window_size)
     window=Window(store,tmp_path,demo=True)
     window.resize(*window_size)
     window.show();settle(app)
-    window.images.loaded(post.media[0]["preview"],image_bytes(200,1400))
+    window.images.loaded(post.media[0]["preview"],local_pixels(200,1400))
     settle(app)
     assert window.size().width()==window_size[0]
     assert window.column.width()<=MAX_FEED_WIDTH
@@ -49,7 +49,7 @@ def test_shrinking_window_recalculates_image_height(app,tmp_path):
     store=Store(":memory:");post=make_post(1,True);store.insert_posts([post,make_post(0)])
     window=Window(store,tmp_path,demo=True)
     window.resize(640,900);window.show();settle(app)
-    window.images.loaded(post.media[0]["preview"],image_bytes(240,1400));settle(app)
+    window.images.loaded(post.media[0]["preview"],local_pixels(240,1400));settle(app)
     tall=window.feed.visualRect(window.model.index(0)).height()
     window.resize(640,480);settle(app)
     shorter=window.feed.visualRect(window.model.index(0)).height()

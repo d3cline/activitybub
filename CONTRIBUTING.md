@@ -1,6 +1,6 @@
 # Contributing
 
-Use Python 3.10+ and a virtual environment:
+Use Python 3.11+ and a virtual environment:
 
 ```bash
 python -m venv .venv

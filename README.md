@@ -18,14 +18,14 @@ Download a portable build from the repository's Releases page, extract the
 **whole folder**, and run `Activity-Bub` on Linux or `Activity-Bub.exe` on Windows.
 Portable builds include the runtime; Python installation is unnecessary.
 
-For source installs, use Python 3.10+:
+For source installs, use Python 3.11+:
 
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
-First launch creates a virtual environment and installs Qt Essentials and psutil. On
+First launch creates a virtual environment and installs Qt Essentials, psutil, and Pillow. On
 Windows, double-click `Activity-Bub.bat`. A Linux application-menu shortcut is
 available through `./install-desktop.sh`. Run `./run.sh --demo` for the offline
 preview. See [portable notes](docs/PORTABLE.md) for platform requirements.
@@ -124,13 +124,36 @@ payload bytes, not TLS/header overhead. All counters stay local.
 
 Retry-After, retry backoff, TLS verification, public-IP pinning, and response-size
 limits apply. HTML becomes plain text; remote SVG/HTML is not rendered as image
-data. Images decode in background workers with bounded memory. Servers you query
+data. Raster previews decode in disposable restricted processes, then enter the
+GUI as raw RGBA pixels. Original metadata and file trailers are discarded.
+Servers you query
 see your IP address and the app's User-Agent, as with any direct client.
 
 Original previews use a 64 MiB memory budget, with another 16 MiB for fitted
 display sizes. Pending image jobs are capped at eight. Fast scrolling replaces
 stale queued image jobs; already-running requests finish normally. Covered CW
 and sensitive media are excluded from preloading until revealed.
+
+Preview isolation currently requires Linux x86-64 or arm64 with seccomp support;
+the packaged policy has been exercised on x86-64 here. Windows, macOS, and
+unsupported systems keep remote previews disabled. There is no in-process
+fallback or unsafe-preview switch. Text browsing and browser links still work.
+Only PNG, JPEG, GIF (first frame), WebP (first frame), and BMP are accepted.
+TIFF, AVIF/HEIF, SVG, documents, and executables are rejected as previews.
+
+Each image is limited to 5 MiB input, 16 million source pixels, 3 CPU seconds,
+512 MiB process address space, and 6 seconds of wall time. At most two decoder
+processes run simultaneously. Pixel output is bounded and validated before GUI
+allocation. The worker cannot open files, create sockets, fork, or exec after
+its policy is installed. Unrelated environment variables and inherited file
+descriptors are removed. A failed policy, crashed decoder, malformed result,
+timeout, or oversized output produces an unavailable preview.
+
+This is defense in depth, not antivirus certification or proof against all
+memory-corruption or kernel bugs. The main app remains a normal desktop process;
+post text and dependencies still require security maintenance. See the
+[security review](docs/SECURITY-AUDIT.md). Opening an original/media link hands
+that HTTPS URL to your external browser, outside the preview restrictions.
 
 ## Honest edges
 
@@ -156,7 +179,7 @@ python -m activity_bub --smoke-test
 python tools/build_release.py
 ```
 
-GitHub Actions tests Linux/Windows with Python 3.10/3.12. Version tags build
+GitHub Actions tests Linux/Windows with Python 3.11/3.12. Version tags build
 portable native apps, Python wheel/sdist, source ZIP, checksums, and a **draft**
 release for maintainer review. The build script smoke-tests the executable it
 actually packages. Linux and Windows builds run on their respective platforms.

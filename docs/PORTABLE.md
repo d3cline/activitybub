@@ -23,7 +23,14 @@ Other Linux release files may have a newer minimum; consult BUILD-INFO.json and
 the release notes. Windows builds target Windows 10/11 x86-64. Native desktop
 testing beyond the automated smoke check remains a release-maintainer task.
 
-The locally built 0.3.1 Linux archive requires glibc 2.39 or newer. If your
+The locally built 0.3.2 Linux archive requires glibc 2.39 or newer. If your
 desktop reports a missing `libxcb-cursor.so.0`, install your distribution's
 xcb-cursor package. Headless smoke tests cannot verify the compositor libraries
 provided by your desktop.
+
+Security update: remote previews require the restricted Linux image worker.
+Windows and macOS currently browse text with remote previews disabled; no
+in-process image fallback is used. Unsupported Linux architectures or blocked
+seccomp setup also fail closed. Original/media links open in your external
+browser and leave this protection boundary. See the source package's
+`docs/SECURITY-AUDIT.md` for the threat model, limits, and remaining risks.

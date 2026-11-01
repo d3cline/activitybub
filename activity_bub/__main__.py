@@ -7,7 +7,6 @@ import tempfile
 from pathlib import Path
 
 from . import __version__
-from .store import SEEDS, Store
 
 
 def default_data_dir():
@@ -19,6 +18,10 @@ def default_data_dir():
 
 
 def main():
+    if sys.argv[1:]==["--_decode-image"]:
+        from .image_worker import main as decode_image
+        os._exit(decode_image())
+    from .store import SEEDS, Store
     parser = argparse.ArgumentParser(description="Activity Bub — a public Fediverse desktop explorer")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--demo", action="store_true", help="Run a clearly labeled offline demo, separate from your real cache")
@@ -42,6 +45,17 @@ def main():
         return 0
     if args.smoke_test:
         args.demo=True
+        from .image_policy import supported
+        if supported():
+            from PySide6.QtCore import QBuffer, QIODevice
+            from PySide6.QtGui import QImage
+            from .image_io import decode_raster
+            sample=QImage(2,2,QImage.Format.Format_RGB32)
+            sample.fill(0xff55aa77)
+            buffer=QBuffer();buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            sample.save(buffer,"PNG")
+            if decode_raster(bytes(buffer.data())).isNull():
+                raise RuntimeError("Restricted image worker smoke test failed")
     if args.check:
         from .engine import APIs
         from .network import Network, domain

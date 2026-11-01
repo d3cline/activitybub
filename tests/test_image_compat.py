@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QIcon, QImage
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from activity_bub.image_io import decode_raster, remove_duplicate_exif
+from activity_bub.image_policy import supported
 from activity_bub.ui import Images, add_clear_action
 
 
@@ -65,6 +66,7 @@ def test_clear_search_avoids_reproduced_gnome_palette_warnings(app,tmp_path):
         QIcon.setThemeName(old_name)
 
 
+@pytest.mark.skipif(not supported(),reason="Restricted remote-image decoding is Linux-only")
 def test_png_duplicate_exif_is_cleaned_without_changing_pixels(app):
     source = png()
     payload = b'II*\x00\x08\x00\x00\x00\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00'
@@ -87,8 +89,8 @@ def test_png_duplicate_exif_is_cleaned_without_changing_pixels(app):
 
 def test_remote_svg_never_enters_qt_svg_plugin(app,monkeypatch):
     from activity_bub import image_io
-    def reject(*args,**kwargs): raise AssertionError("SVG was probed by a Qt image plugin")
-    monkeypatch.setattr(image_io,"QImageReader",reject)
+    def reject(*args,**kwargs): raise AssertionError("SVG was sent to an image decoder")
+    monkeypatch.setattr(image_io,"_exchange",reject)
     assert decode_raster(b'<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(#gpa:foreground)"/></svg>').isNull()
 
 
@@ -99,14 +101,15 @@ def test_invalid_image_and_truncated_metadata_fail_without_exception(app):
     assert decode_raster(truncated).isNull()
 
 
+@pytest.mark.skipif(not supported(),reason="Restricted remote-image decoding is Linux-only")
 def test_real_image_job_decodes_off_gui_thread(app,monkeypatch):
     from activity_bub import ui
     image = png()
     decoder_threads=[]
     original = ui.decode_raster
-    def tracked(data):
+    def tracked(data,**kwargs):
         decoder_threads.append(threading.get_ident())
-        return original(data)
+        return original(data,**kwargs)
     monkeypatch.setattr(ui,"decode_raster",tracked)
     images = Images(threading.Event())
     class Network:

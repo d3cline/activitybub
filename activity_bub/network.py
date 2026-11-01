@@ -21,7 +21,7 @@ from .telemetry import Governor, Traffic
 
 def domain(value: str) -> str:
     value = str(value or "").strip().lower()
-    if not value or len(value) > 2048 or any(c.isspace() for c in value):
+    if not value or len(value) > 2048 or any(c.isspace() or ord(c)<32 or ord(c)==127 or c=="\\" for c in value):
         raise ValueError("Enter a public server domain, for example mastodon.social")
     u = urlsplit(value if "://" in value else "https://" + value)
     if u.scheme != "https" or u.username or u.password or u.port not in (None, 443):
@@ -35,7 +35,7 @@ def domain(value: str) -> str:
         pass
     else:
         raise ValueError("Use a server domain, not an IP address")
-    if host.endswith((".local", ".localhost", ".internal", ".test", ".invalid", ".onion")):
+    if host.rsplit(".",1)[-1].isdigit() or host.endswith((".local", ".localhost", ".internal", ".test", ".invalid", ".onion")):
         raise ValueError("Only public internet domains are supported")
     return host
 
@@ -47,7 +47,12 @@ def public_addresses(host: str, port=443):
     # Reject mixed public/private DNS answers too. Pin sockets to these exact results.
     for _, _, _, _, addr in addresses:
         ip = ipaddress.ip_address(addr[0])
-        if not ip.is_global or ip.is_multicast or ip.is_reserved or (getattr(ip, "ipv4_mapped", None) and not ip.ipv4_mapped.is_global):
+        embedded=[getattr(ip,"ipv4_mapped",None),getattr(ip,"sixtofour",None)]
+        if getattr(ip,"teredo",None):embedded.extend(ip.teredo)
+        if isinstance(ip,ipaddress.IPv6Address) and ip in ipaddress.IPv6Network("64:ff9b::/96"):
+            embedded.append(ipaddress.IPv4Address(int(ip)&0xffffffff))
+        if (not ip.is_global or ip.is_multicast or ip.is_reserved
+                or any(not address.is_global or address.is_multicast or address.is_reserved for address in embedded if address)):
             raise ValueError("Server resolves to a non-public address")
     return addresses
 
@@ -74,6 +79,29 @@ class FetchError(Exception):
         self.status = status
         self.retry_after = retry_after
         self.restricted = restricted
+
+
+def bounded_json(payload):
+    # Bound nesting before parsing instead of trusting an embedding runtime's
+    # potentially raised recursion limit. Quotes inside escaped strings do not
+    # change nesting. Ordinary string contents are skipped by the regex engine.
+    # Parse the same UTF-8 representation that the byte-level depth scan sees;
+    # json.loads(bytes) otherwise auto-detects UTF-16/32 and could disagree with
+    # quote/backslash handling in the scan. JSON network APIs use UTF-8.
+    text=payload.decode("utf-8-sig")
+    depth=0;quoted=False
+    for match in re.finditer(br'[{}\[\]"]',payload):
+        token=match[0]
+        if token==b'"':
+            escaped=0;position=match.start()-1
+            while position>=0 and payload[position]==92:
+                escaped+=1;position-=1
+            if escaped%2==0:quoted=not quoted
+        elif not quoted:
+            depth += 1 if token in (b"{",b"[") else -1
+            if depth>64:raise ValueError("JSON nesting exceeds limit")
+    def invalid_constant(value):raise ValueError("Non-finite JSON number")
+    return json.loads(text,parse_constant=invalid_constant)
 
 
 def retry_seconds(value: str, now=None) -> float:
@@ -133,9 +161,10 @@ class Network:
                     try:
                         error_payload=r.read1(4096)
                         self.meter.add("bytes",len(error_payload))
-                        info = json.loads(error_payload)
+                        info = bounded_json(error_payload)
                         detail = str(info.get("error") or info.get("message") or "")[:160] if isinstance(info, dict) else ""
-                    except (ValueError, OSError):
+                        detail = re.sub(r"[\x00-\x1f\x7f]"," ",detail)
+                    except (ValueError, OSError, RecursionError):
                         pass
                     restricted = r.status in (401, 403) or (r.status == 422 and bool(re.search(r"authenticat|access.?token|credential", detail, re.I)))
                     limited=r.status in (429,503)
@@ -180,6 +209,6 @@ class Network:
 
     def json(self, url, data=None):
         try:
-            return json.loads(self.request(url, data))
-        except (ValueError, UnicodeError) as exc:
+            return bounded_json(self.request(url, data))
+        except (ValueError, UnicodeError, RecursionError) as exc:
             raise FetchError("Server did not return valid JSON") from exc

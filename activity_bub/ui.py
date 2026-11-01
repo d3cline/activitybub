@@ -23,6 +23,7 @@ from . import __version__
 from .content import Post, rich_text, web_url
 from .engine import Engine
 from .image_io import decode_raster
+from .image_policy import supported as image_isolation_supported
 from .performance import PROFILES, get_profile
 from .network import Network, domain
 from .scrolling import SmoothFeedView
@@ -50,6 +51,33 @@ def button(text, callback=None, name=""):
     w.setObjectName(name)
     w.setCursor(Qt.CursorShape.PointingHandCursor)
     return w
+
+
+def safe_tooltip(text):
+    return "<qt>"+html.escape(text).replace("\n","<br>")+"</qt>"
+
+
+def plain_warning(parent,title,text):
+    dialog=QMessageBox(QMessageBox.Icon.Warning,title,"",QMessageBox.StandardButton.Ok,parent)
+    dialog.setTextFormat(Qt.TextFormat.PlainText)
+    dialog.setText(text)
+    dialog.exec()
+
+
+class PostTextBrowser(QTextBrowser):
+    """The post reader can display our markup, never load documents or resources."""
+    def __init__(self):
+        super().__init__()
+        self.setOpenLinks(False)
+        self.setOpenExternalLinks(False)
+        self.setAcceptDrops(False)
+        self.setAcceptRichText(False)
+
+    def loadResource(self,*_):
+        return None
+
+    def doSetSource(self,*_):
+        pass
 
 
 def clear_icon(color=DIM):
@@ -123,7 +151,7 @@ class ImageTask(QRunnable):
     def run(self):
         try:
             data = self.network.request(self.url, max_bytes=5 * 1024 * 1024)
-            picture = decode_raster(data)
+            picture = decode_raster(data,stop=getattr(self.network,"stop",None))
         except Exception:
             picture = QImage()
         self.signals.done.emit(self.url, picture)
@@ -146,6 +174,7 @@ class Images(QObject):
         self.failed = set()
         self.tasks = {}
         self.blocked = lambda: False
+        self.isolated = image_isolation_supported()
         QImageReader.setAllocationLimit(32)
 
     def get(self, url):
@@ -155,7 +184,7 @@ class Images(QObject):
         return None
 
     def ensure(self, url):
-        if self.blocked() or not url or url in self.cache or url in self.failed or url in self.tasks or len(self.tasks) >= self.max_pending:
+        if not self.isolated or self.blocked() or not url or url in self.cache or url in self.failed or url in self.tasks or len(self.tasks) >= self.max_pending:
             return
         task = ImageTask(url, self.network)
         self.tasks[url] = task
@@ -362,6 +391,8 @@ class Cards(QStyledItemDelegate):
                 caption = "Image preview" if preview(post) else "Audio / video · open post to play"
                 if preview(post) in self.images.failed:
                     caption = "Preview unavailable · open original"
+                if not self.images.isolated:
+                    caption = "Previews disabled · image isolation unavailable"
                 painter.drawText(image_rect, Qt.AlignmentFlag.AlignCenter, caption)
             painter.setClipping(False)
         painter.setFont(f)
@@ -392,7 +423,7 @@ class Detail(QWidget):
         self.meta = label("", "muted", True)
         self.warning = label("", "muted", True)
         self.reveal = button("Reveal this post", self.reveal_post)
-        self.body = QTextBrowser()
+        self.body = PostTextBrowser()
         self.body.setOpenLinks(False)
         self.body.setOpenExternalLinks(False)
         self.body.anchorClicked.connect(lambda u: self.window.open_url(u.toString()))
@@ -1065,8 +1096,9 @@ class Window(QMainWindow):
 
     def open_url(self, url):
         safe = web_url(url)
-        if safe:
-            QDesktopServices.openUrl(QUrl(safe))
+        target=QUrl(safe,QUrl.ParsingMode.StrictMode)
+        if safe and target.isValid() and target.scheme()=="https" and not target.userInfo():
+            QDesktopServices.openUrl(target)
 
     def open_selected(self):
         p = self.current_post()
@@ -1154,12 +1186,12 @@ class Window(QMainWindow):
             self.pause.setEnabled(False)
             self.logs.append("Crawler stopped: " + str(value))
             self.logline.setText(self.logs[-1])
-            QMessageBox.warning(self, "Crawler stopped", str(value) + "\nYour cache is still available. Restart Activity Bub to retry.")
+            plain_warning(self, "Crawler stopped", str(value) + "\nYour cache is still available. Restart Activity Bub to retry.")
         else:
             message = str(value)
             self.logs.append(message)
             self.logline.setText(message)
-            self.logline.setToolTip("\n".join(list(self.logs)[-12:]))
+            self.logline.setToolTip(safe_tooltip("\n".join(list(self.logs)[-12:])))
 
     def tick(self):
         s = self.store.stats()
@@ -1169,7 +1201,7 @@ class Window(QMainWindow):
         state = "DEMO" if self.demo else "Paused" if self.worker.engine.paused.is_set() else "Exploring" if self.discover.isChecked() else "Reading"
         summary = f"{state} · {s['servers']:,} servers · {s['ready']:,} feeds · {s['posts']:,} posts"
         self.status.setText(QFontMetrics(self.status.font()).elidedText(summary, Qt.TextElideMode.ElideRight, max(100, self.column.width())))
-        self.status.setToolTip(summary + f"\n{progress['rank']} · {progress['xp']:,} XP" + "\n" + "\n".join(list(self.logs)[-8:]))
+        self.status.setToolTip(safe_tooltip(summary + f"\n{progress['rank']} · {progress['xp']:,} XP" + "\n" + "\n".join(list(self.logs)[-8:])))
         if self.mode == "servers":
             self.refresh_radar()
         self.update_empty()
@@ -1336,7 +1368,7 @@ class Window(QMainWindow):
             self.logline.setText(f"Imported {count:,} new server seeds")
             self.refresh_radar()
         except (OSError, ValueError, UnicodeError) as exc:
-            QMessageBox.warning(self, "Import failed", str(exc))
+            plain_warning(self, "Import failed", str(exc))
 
     def export_servers(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export all discovered servers", "activity-bub-servers.csv", "CSV (*.csv)")
@@ -1348,7 +1380,7 @@ class Window(QMainWindow):
                     writer.writerows((host,) for host in self.store.all_hosts())
                 self.logline.setText("Exported the complete server registry")
             except OSError as exc:
-                QMessageBox.warning(self, "Export failed", str(exc))
+                plain_warning(self, "Export failed", str(exc))
 
     def preferences(self):
         dialog = QDialog(self)
@@ -1371,7 +1403,8 @@ class Window(QMainWindow):
                 self.store.unmute_author(item.text())
                 authors.takeItem(authors.row(item))
         layout.addWidget(button("Unmute selected author", unmute))
-        layout.addWidget(label("Content warnings stay covered until you reveal a post. Images load for visible posts. Audio and video open in your browser.\n\nThe cache retains the latest 50,000 posts plus your saved posts. Server discovery has no daily cap.\n\nDisplay backend: " + QApplication.platformName() + "\nData folder:\n" + str(self.data_dir), "muted", True))
+        image_policy="Restricted Linux preview workers; failures stay blocked." if self.images.isolated else "Remote previews disabled: restricted decoding is unavailable on this platform."
+        layout.addWidget(label("Content warnings stay covered until you reveal a post. Nearby images preload in restricted workers. Audio and video open in your browser.\n\n"+image_policy+"\n\nThe cache retains the latest 50,000 posts plus your saved posts. Server discovery has no daily cap.\n\nDisplay backend: " + QApplication.platformName() + "\nData folder:\n" + str(self.data_dir), "muted", True))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)

@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 class PlainText(HTMLParser):
@@ -36,16 +36,23 @@ class PlainText(HTMLParser):
 def plain(value) -> str:
     parser = PlainText()
     parser.feed(str(value or "")[:100_000])
-    return re.sub(r"\n{3,}", "\n\n", "".join(parser.parts)).strip()[:30_000]
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", "".join(parser.parts))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()[:30_000]
 
 
 def web_url(value) -> str:
-    value = str(value or "").strip()
+    value = str(value or "")
+    if len(value)>4096 or any(ord(c)<32 or 127<=ord(c)<160 or c=="\\" for c in value):
+        return ""
+    value=value.strip()
     try:
         u = urlsplit(value)
         if u.scheme == "https" and u.hostname and not u.username and not u.password and u.port in (None, 443):
-            return value[:4096]
-    except ValueError:
+            from .network import domain
+            host=domain(u.hostname)
+            value.encode("utf-8")  # Reject malformed Unicode before Qt sees it.
+            return urlunsplit(("https",host,u.path,u.query,u.fragment))
+    except (ValueError,UnicodeError):
         pass
     return ""
 

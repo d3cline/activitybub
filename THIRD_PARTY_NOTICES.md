@@ -9,6 +9,7 @@ licensed. Portable builds also contain independently licensed dependencies.
 | PySide6 Essentials / Qt | LGPLv3/GPL/commercial options; https://code.qt.io/cgit/pyside/pyside-setup.git/ and https://download.qt.io/official_releases/qt/ |
 | Shiboken6 | LGPLv3/GPL/commercial options; same Qt for Python source tree |
 | psutil | BSD 3-Clause; https://github.com/giampaolo/psutil |
+| Pillow and bundled image libraries | HPND and component licenses; https://github.com/python-pillow/Pillow |
 | PyInstaller bootloader | GPLv2 or later with the bootloader exception; https://github.com/pyinstaller/pyinstaller |
 | OpenSSL | Apache License 2.0; https://github.com/openssl/openssl |
 
@@ -19,5 +20,5 @@ replaceable in the adjacent `_internal` directory. No restriction on modifying
 or reverse engineering those libraries is imposed by the Activity Bub license.
 
 Source archives do not bundle the dependencies. Developer-only tools such as
-Pillow, pytest, and build are used to generate/test artifacts; their code is not
+pytest and build are used to generate/test artifacts; their code is not
 intentionally included in the portable app.

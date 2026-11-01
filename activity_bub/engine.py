@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from collections import deque
 from urllib.parse import urlencode
 
-from .content import mastodon_post, misskey_post, web_url
+from .content import mastodon_post, misskey_post, plain, web_url
 from .network import FetchError, Network
 from .performance import AdaptiveLimit, ProcessStats, get_profile
 from .telemetry import Traffic
@@ -32,7 +32,7 @@ class APIs:
                     href = web_url(link.get("href"))
                     if href:
                         info = self.net.json(href)
-                        software = str(info.get("software", {}).get("name", "")).lower()[:80]
+                        software = plain(info.get("software", {}).get("name", "")).lower()[:80]
                         break
         except FetchError as exc:
             if exc.status in (429, 503):
@@ -48,7 +48,7 @@ class APIs:
                 info = self.net.json(base + path)
                 if isinstance(info, dict) and (info.get("version") or info.get("uri") or info.get("domain")):
                     return {"software": "mastodon-compatible", "adapter": "mastodon",
-                            "title": str(info.get("title") or host)[:200], "state": "ready"}
+                            "title": plain(info.get("title") or host)[:200], "state": "ready"}
             except FetchError as exc:
                 if exc.status not in (400, 404, 405, 410):
                     raise

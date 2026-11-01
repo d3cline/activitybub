@@ -10,8 +10,9 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from activity_bub.store import Store
+from activity_bub.image_policy import supported
 from activity_bub.ui import Images, Window, preview
-from tests.test_feed_images import image_bytes, make_post
+from tests.test_feed_images import image_bytes, local_pixels, make_post
 
 
 @pytest.fixture(scope="module")
@@ -129,7 +130,7 @@ def test_loading_image_above_view_preserves_anchor_and_remaining_wheel_travel(ap
         offset=view.visualRect(anchor).top()
         wheel(view)
         remaining=view._target-bar.value()
-        w.images.loaded(preview(w.model.posts[1]),image_bytes(1000,100))
+        w.images.loaded(preview(w.model.posts[1]),local_pixels(1000,100))
         w.relayout_feed()
         after=view.indexAt(view.viewport().rect().topLeft())
         assert after.data(Qt.ItemDataRole.UserRole).uri==uri
@@ -163,6 +164,7 @@ def test_rolling_feed_trim_preserves_wheel_motion_and_position(app,tmp_path):
         w.close();settle(app)
 
 
+@pytest.mark.skipif(not supported(),reason="Restricted remote-image decoding is Linux-only")
 def test_fast_scroll_discards_stale_queued_images_before_requesting_new_ones(app):
     entered=threading.Event();release=threading.Event();calls=[]
     payload=image_bytes(80,120)
@@ -193,7 +195,7 @@ def test_fast_scroll_discards_stale_queued_images_before_requesting_new_ones(app
 def test_resized_previews_are_reused_and_bounded_without_changing_source(app):
     images=Images(threading.Event())
     url="https://one.example/portrait.png"
-    images.loaded(url,image_bytes(800,1200))
+    images.loaded(url,local_pixels(800,1200))
     first=images.fitted(url,QSize(300,400),2)
     assert images.fitted(url,QSize(300,400),2).cacheKey()==first.cacheKey()
     assert first.devicePixelRatio()==2

@@ -94,7 +94,7 @@ def test_image_previews_accept_raster_and_reject_remote_svg(app, tmp_path):
     buffer = QBuffer()
     buffer.open(QIODevice.OpenModeFlag.WriteOnly)
     image.save(buffer, "PNG")
-    window.images.loaded("https://one.example/1.png", bytes(buffer.data()))
+    window.images.loaded("https://one.example/1.png", image)
     assert window.images.get("https://one.example/1.png") is not None
     window.images.loaded("https://one.example/1.svg", b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>')
     assert "https://one.example/1.svg" in window.images.failed

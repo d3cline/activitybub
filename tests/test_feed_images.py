@@ -42,6 +42,11 @@ def make_post(n, image=False):
                 created=n, media=[{"preview":f"https://one.example/{n}.png", "url":"", "type":"image"}] if image else [])
 
 
+def local_pixels(width,height):
+    """Trusted synthetic pixels for cross-platform GUI geometry tests."""
+    return QImage.fromData(image_bytes(width,height))
+
+
 @pytest.mark.parametrize("source_size", [(240, 480), (400, 400), (640, 240), (160, 1600)])
 def test_painted_feed_preserves_shape_and_all_four_edges(app, tmp_path, source_size):
     s = Store(":memory:")
@@ -51,7 +56,7 @@ def test_painted_feed_preserves_shape_and_all_four_edges(app, tmp_path, source_s
     w.resize(640, 720)
     w.show()
     app.processEvents()
-    w.images.loaded(p.media[0]["preview"], image_bytes(*source_size))
+    w.images.loaded(p.media[0]["preview"], local_pixels(*source_size))
     width = 600
     text, text_height, image_height, row_height = w.delegate.metrics(p, width)
     # Portraits get more vertical room than landscape images; extreme images
@@ -97,7 +102,7 @@ def test_image_loading_above_reader_keeps_scroll_anchor(app, tmp_path):
     anchor = w.feed.indexAt(w.feed.viewport().rect().topLeft())
     before_uri = anchor.data(Qt.ItemDataRole.UserRole).uri
     before_top = w.feed.visualRect(anchor).top()
-    w.images.loaded(w.model.posts[1].media[0]["preview"], image_bytes(200, 500))
+    w.images.loaded(w.model.posts[1].media[0]["preview"], local_pixels(200, 500))
     app.processEvents()
     after = w.feed.indexAt(w.feed.viewport().rect().topLeft())
     assert after.data(Qt.ItemDataRole.UserRole).uri == before_uri
@@ -108,10 +113,10 @@ def test_image_loading_above_reader_keeps_scroll_anchor(app, tmp_path):
 
 def test_decoding_preserves_portrait_resolution_without_upscaling(app, tmp_path):
     w = Window(Store(":memory:"), tmp_path, demo=True)
-    w.images.loaded("https://one.example/tall.png", image_bytes(800, 1200))
+    w.images.loaded("https://one.example/tall.png", local_pixels(800, 1200))
     tall = w.images.get("https://one.example/tall.png")
     assert tall.size().width() == 800 and tall.size().height() == 1200
-    w.images.loaded("https://one.example/small.png", image_bytes(80, 120))
+    w.images.loaded("https://one.example/small.png", local_pixels(80, 120))
     small = w.images.get("https://one.example/small.png")
     assert small.width() == 80 and small.height() == 120
     w.close()
