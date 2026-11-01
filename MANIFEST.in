@@ -1,0 +1,9 @@
+include LICENSE THIRD_PARTY_NOTICES.md CHANGELOG.md CONTRIBUTING.md SECURITY.md
+include run.sh Activity-Bub.bat install-desktop.sh run_app.py requirements.txt
+recursive-include activity_bub/assets *.svg *.png *.ico
+recursive-include tools *.py
+recursive-include docs *.md *.png
+recursive-include third_party *.txt *.md
+recursive-include tests *.py
+recursive-include .github *.yml
+global-exclude *.pyc *.pyo *.sqlite3 *.spec

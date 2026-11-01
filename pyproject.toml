@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "activity-bub"
+version = "0.3.1"
+description = "Native desktop Fediverse explorer, recursive server discovery, and endless public feeds"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["PySide6-Essentials>=6.7,<7", "psutil>=6,<8"]
+license-files = ["LICENSE"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "PyYAML>=6,<7"]
+build = ["pyinstaller>=6,<7", "build>=1,<2", "pillow>=10,<13"]
+
+[project.gui-scripts]
+activity-bub = "activity_bub.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["activity_bub*"]
+
+[tool.setuptools.package-data]
+activity_bub = ["assets/*.svg", "assets/*.png", "assets/*.ico"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
