@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.1
+
+- Apply color visibility and contrast settings to image pixels in both the feed
+  and full reader by default, including existing saved accessibility preferences.
+- Blue/yellow, red-sensitive and green-sensitive color remapping, grayscale,
+  warm colors with reduced blue, and a shared high-contrast tone curve.
+- Add a saved Apply color and contrast settings to images checkbox for comparing
+  original colors. Changes update loaded previews immediately without refetching.
+- Keep unmodified source pixels and bounded display caches; preserve image
+  proportions, transparency, HiDPI scaling, CW rules and decoder isolation.
+- Pixel-level, feed/reader, persistence, raw-only and release smoke checks cover
+  the image filtering path. Filters are approximate display aids, not a clinical
+  correction or an exact linear-light CVD simulation.
+
+## 0.5.0
+
+- Accessibility panel with saved blue/yellow, red-sensitive, green-sensitive,
+  monochrome and warm interface palettes, dark/light high contrast, 100–200%
+  text sizing, font choice, bold text, and larger controls.
+- Native text feed for system screen readers. Feed accessibility includes author,
+  warning, post text, attachment descriptions, counts and saved state. Unrevealed
+  CW bodies and attachment descriptions remain hidden from assistive tools.
+- Explicit control labels, keyboard focus outlines, F6 feed focus, Ctrl+Alt+A
+  accessibility settings, zoom shortcuts, and --screen-reader startup support.
+- Reduced motion disables wheel easing and Auto Doom; screen-reader mode also
+  disables animated scrolling. Hide previews skips new image requests and keeps
+  descriptions. Existing Linux decoder restrictions remain in place.
+- Footer controls reflow at larger sizes; the full reader and accessibility panel
+  scroll vertically so controls remain reachable in a narrow window.
+- Automated Qt accessibility-tree, contrast, CW privacy, keyboard, motion,
+  persistence and zoom checks. Real Orca/NVDA/VoiceOver sessions remain unverified.
+
 ## 0.4.0
 
 - Auto Doom button in the existing feed footer, with a saved 0.25×–4× speed

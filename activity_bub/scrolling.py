@@ -30,6 +30,7 @@ class SmoothFeedView(QListView):
         self._auto_position = 0.0
         self._auto_tick = 0.0
         self._last_more = 0.0
+        self.reduced_motion = False
         self.verticalScrollBar().valueChanged.connect(self._external_scroll)
         self.verticalScrollBar().sliderPressed.connect(self.stop_all_scrolling)
 
@@ -38,7 +39,7 @@ class SmoothFeedView(QListView):
         return self.auto_motion.isActive()
 
     def set_auto_scroll(self, enabled):
-        enabled = bool(enabled)
+        enabled = bool(enabled) and not self.reduced_motion
         if enabled == self.auto_active:
             return
         self.stop_scrolling()
@@ -50,6 +51,11 @@ class SmoothFeedView(QListView):
         else:
             self.auto_motion.stop()
         self.autoChanged.emit(enabled)
+
+    def set_reduced_motion(self, enabled):
+        self.reduced_motion = bool(enabled)
+        if enabled:
+            self.stop_all_scrolling()
 
     def set_auto_speed(self, pixels_per_second):
         self.auto_speed = max(15.0, min(240.0, float(pixels_per_second)))
@@ -93,6 +99,10 @@ class SmoothFeedView(QListView):
 
     def wheelEvent(self, event):
         self.set_auto_scroll(False)
+        if self.reduced_motion:
+            self.stop_scrolling()
+            super().wheelEvent(event)
+            return
         # High-resolution gestures already carry pixel motion and/or native
         # momentum. Do not put another easing animation on top of them.
         if event.pixelDelta().y() and not event.modifiers():

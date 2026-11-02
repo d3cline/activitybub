@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--data-dir", type=Path, help="Choose a folder for the SQLite cache and preferences")
     parser.add_argument("--seed", action="append", default=[], help="Add a starting server domain (repeatable)")
     parser.add_argument("--native-wayland", action="store_true", help="Skip automatic XWayland compatibility on Linux")
+    parser.add_argument("--screen-reader", action="store_true", help="Enable and save the native text feed for system screen readers")
     parser.add_argument("--smoke-test", action="store_true", help="Open an offline demo and exit automatically (release verification)")
     parser.add_argument("--_probe-xcb", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--check", metavar="DOMAIN", help="Check one public server from the terminal, without launching Qt")
@@ -46,12 +47,18 @@ def main():
     if args.smoke_test:
         args.demo=True
         from .image_policy import supported
+        from PySide6.QtGui import QImage
+        from .accessibility import Accessibility
+        from .image_visibility import filter_image
+        sample=QImage(2,2,QImage.Format.Format_RGB32)
+        sample.fill(0xff55aa77)
+        for vision in ("tritan", "protan", "deutan", "mono", "warm"):
+            result=filter_image(sample,Accessibility(vision=vision,contrast="dark"))
+            if result.isNull() or result.pixelColor(0,0)==sample.pixelColor(0,0):
+                raise RuntimeError("Image visibility filter smoke test failed")
         if supported():
             from PySide6.QtCore import QBuffer, QIODevice
-            from PySide6.QtGui import QImage
             from .image_io import decode_raster
-            sample=QImage(2,2,QImage.Format.Format_RGB32)
-            sample.fill(0xff55aa77)
             buffer=QBuffer();buffer.open(QIODevice.OpenModeFlag.WriteOnly)
             sample.save(buffer,"PNG")
             if decode_raster(bytes(buffer.data())).isNull():
@@ -77,6 +84,17 @@ def main():
     compatibility = configure_backend(native_wayland=args.native_wayland)
     if compatibility:
         print("Activity Bub: using XWayland compatibility for the Qt Wayland input-focus issue.")
+    temporary = tempfile.TemporaryDirectory(prefix="activity-bub-demo-") if args.demo else None
+    data_dir = Path(temporary.name) if temporary else (args.data_dir or default_data_dir())
+    store = Store(data_dir / "activity-bub.sqlite3")
+    from .accessibility import Accessibility
+    prefs = Accessibility.load(store.setting("accessibility", {}))
+    if args.screen_reader:
+        from dataclasses import replace
+        prefs = replace(prefs, screen_reader=True)
+        store.set_setting("accessibility", prefs.saved())
+    if prefs.screen_reader and sys.platform.startswith("linux"):
+        os.environ["QT_LINUX_ACCESSIBILITY_ALWAYS_ON"] = "1"
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
     from .ui import STYLE, Window
@@ -91,9 +109,6 @@ def main():
     font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(font)
     app.setStyleSheet(STYLE)
-    temporary = tempfile.TemporaryDirectory(prefix="activity-bub-demo-") if args.demo else None
-    data_dir = Path(temporary.name) if temporary else (args.data_dir or default_data_dir())
-    store = Store(data_dir / "activity-bub.sqlite3")
     if args.demo:
         from .demo import populate
         populate(store)

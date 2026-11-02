@@ -52,7 +52,8 @@ QCheckBox::indicator:checked {{ background: {t.accent}; border-color: {t.accent}
 QSlider::groove:horizontal {{ height: 4px; background: {t.line}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {t.accent}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ width: 12px; margin: -5px 0; background: {t.accent}; border-radius: 6px; }}
-QListView, QTableWidget, QListWidget, QTextBrowser {{ background: {t.bg}; border: 0; outline: 0; selection-background-color: {t.selected}; }}
+QListView, QTableWidget, QListWidget, QTextBrowser {{ background: {t.bg}; border: 0; outline: 0; selection-background-color: {t.selected}; selection-color: {t.text}; }}
+QListView::item:selected {{ border: 2px solid {t.accent}; }}
 QTableWidget {{ gridline-color: {t.line}; alternate-background-color: {t.panel}; }}
 QHeaderView::section {{ background: {t.panel}; border: 0; border-bottom: 1px solid {t.line}; color: {t.muted}; padding: 8px; }}
 QScrollBar:vertical {{ background: {t.bg}; width: 9px; margin: 0; }}

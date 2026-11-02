@@ -5,6 +5,8 @@ import html
 import json
 import re
 import time
+import textwrap
+from dataclasses import replace
 from collections import OrderedDict, deque
 from datetime import datetime
 from pathlib import Path
@@ -12,23 +14,26 @@ from pathlib import Path
 from PySide6.QtCore import (QAbstractListModel, QBuffer, QIODevice, QModelIndex, QObject, QPoint, QRect, QRunnable, QSize, Qt,
                             QThread, QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QImage,
-                           QImageReader, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut)
+                           QImageReader, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut, QAccessible)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListView, QListWidget, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy,
-    QProgressBar, QSlider, QSpinBox, QSplitter, QStackedWidget, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QBoxLayout, QScrollArea, QProgressBar, QSlider, QSpinBox, QSplitter, QStackedWidget, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QTextBrowser, QVBoxLayout, QWidget)
 
 from . import __version__
 from .content import Post, rich_text, web_url
 from .engine import Engine
 from .image_io import decode_raster
-from .image_policy import supported as image_isolation_supported
+from .image_policy import MAX_OUTPUT_PIXELS, supported as image_isolation_supported
+from .image_visibility import filter_image
 from .performance import PROFILES, get_profile
 from .network import Network, domain
 from .scrolling import SmoothFeedView
 
 from .themes import THEMES, get_theme, stylesheet
+from .accessibility import (Accessibility, VISION_OPTIONS, CONTRAST_OPTIONS, FONT_OPTIONS, SCALES,
+                            adapt_theme, scale_css, post_description)
 
 DIM = get_theme("bub").muted
 MAX_FEED_WIDTH = 720
@@ -51,6 +56,11 @@ def button(text, callback=None, name=""):
     w.setObjectName(name)
     w.setCursor(Qt.CursorShape.PointingHandCursor)
     return w
+
+
+def styled(widget, css, scale=100):
+    widget.setProperty("bub_style", css)
+    widget.setStyleSheet(scale_css(css, scale))
 
 
 def safe_tooltip(text):
@@ -175,6 +185,7 @@ class Images(QObject):
         self.tasks = {}
         self.blocked = lambda: False
         self.isolated = image_isolation_supported()
+        self.visibility = Accessibility()
         QImageReader.setAllocationLimit(32)
 
     def get(self, url):
@@ -204,14 +215,27 @@ class Images(QObject):
         pix = self.cache.get(url)
         return pix.size() if pix is not None else self.dimensions.get(url, QSize())
 
+    def set_visibility(self, prefs):
+        if prefs.image_signature != self.visibility.image_signature:
+            self.fitted_cache.clear()
+            self.fitted_bytes = 0
+        self.visibility = prefs
+
     def fitted(self, url, size, ratio=1.0):
         pix = self.get(url)
         if pix is None:
             return None
         pixels = QSize(max(1, round(size.width()*ratio)), max(1, round(size.height()*ratio)))
-        key = (url, pix.cacheKey(), pixels.width(), pixels.height(), ratio)
+        key = (url, pix.cacheKey(), pixels.width(), pixels.height(), ratio, self.visibility.image_signature)
         if key not in self.fitted_cache:
-            fitted = pix.scaled(pixels, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            source = pix
+            if self.visibility.image_signature != ("standard", "theme"):
+                # Filter only the pixels needed for display, never upscale first.
+                # Remote originals are bounded by the restricted decoder's limit.
+                bounds = QSize(min(pix.width(), pixels.width()), min(pix.height(), pixels.height()))
+                source = pix.scaled(bounds, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                source = QPixmap.fromImage(filter_image(source.toImage(), self.visibility))
+            fitted = source.scaled(pixels, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             fitted.setDevicePixelRatio(ratio)
             self.fitted_cache[key] = fitted
             self.fitted_bytes += fitted.width()*fitted.height()*4
@@ -227,7 +251,8 @@ class Images(QObject):
         # Production tasks decode QImage off-thread. Bytes remain accepted for
         # cached/local callers; QPixmap creation stays on the GUI thread.
         picture = data if isinstance(data, QImage) else decode_raster(data)
-        if not picture.isNull() and picture.width() <= 12000 and picture.height() <= 12000:
+        if (not picture.isNull() and picture.width() <= 12000 and picture.height() <= 12000
+                and picture.width()*picture.height() <= MAX_OUTPUT_PIXELS):
             picture.setDevicePixelRatio(1)
             previous = self.cache.pop(url, None)
             if previous is not None:
@@ -264,6 +289,7 @@ class FeedModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.posts: list[Post] = []
+        self.covered = lambda p: is_covered(p, set())
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.posts)
@@ -274,10 +300,17 @@ class FeedModel(QAbstractListModel):
         post = self.posts[index.row()]
         if role == Qt.ItemDataRole.UserRole:
             return post
-        if role == Qt.ItemDataRole.DisplayRole:
-            return f"{post.author}, {post.text}"
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.AccessibleTextRole):
+            return post_description(post, self.covered(post), compact=role == Qt.ItemDataRole.DisplayRole)
+        if role == Qt.ItemDataRole.AccessibleDescriptionRole:
+            return "Press Enter to read. B saves this post. Use arrow keys to browse."
         if role == Qt.ItemDataRole.ToolTipRole:
             return "Click or Enter to read · B saves · Ctrl+O opens original · Right click for more"
+
+    def descriptions_changed(self):
+        if self.posts:
+            self.dataChanged.emit(self.index(0), self.index(len(self.posts)-1),
+                                  [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.AccessibleTextRole])
 
     def reset(self, posts):
         self.beginResetModel()
@@ -303,10 +336,19 @@ class Cards(QStyledItemDelegate):
         super().__init__(parent)
         self.images, self.revealed = images, revealed
         self.auto_cw = False
+        self.hide_images = False
+        self.scale = 1.0
         self.theme = get_theme("bub")
         self.font = QFont(QApplication.font())
         self.font.setPointSize(10)
         self.metric_cache = OrderedDict()
+
+    def geometry(self):
+        meta = QFont(self.font)
+        meta.setPointSizeF(8*self.scale)
+        head = max(38, QFontMetrics(self.font).height()+QFontMetrics(meta).height()+7)
+        footer = max(16, QFontMetrics(meta).height())
+        return head, footer, 60+head+footer-16
 
     def metrics(self, post, width):
         covered = is_covered(post,self.revealed,self.auto_cw)
@@ -316,7 +358,7 @@ class Cards(QStyledItemDelegate):
         viewport = self.parent().viewport() if isinstance(self.parent(), QListView) else None
         available_height = viewport.height() if viewport is not None else 700
         key = (post.uri, text, bool(post.media), covered, width, available_height,
-               size.width(), size.height(), self.font.key())
+               size.width(), size.height(), self.font.key(), self.hide_images)
         if key in self.metric_cache:
             self.metric_cache.move_to_end(key)
             return self.metric_cache[key]
@@ -325,13 +367,14 @@ class Cards(QStyledItemDelegate):
         text_limit = fm.lineSpacing() * (2 if post.media else 4)
         height = min(text_limit, max(fm.lineSpacing(), fm.boundingRect(0, 0, content_width, 1000, Qt.TextFlag.TextWordWrap, text).height()))
         image_h = 0
-        if post.media and not covered:
+        base = self.geometry()[2]
+        if post.media and not covered and not self.hide_images:
             # Reserve room for author, caption, and footer, so the entire card
             # fits the reading viewport even in a short half-screen window.
-            budget = min(MAX_FEED_IMAGE_HEIGHT, max(1, available_height - 24 - 106 - height))
+            budget = min(MAX_FEED_IMAGE_HEIGHT, max(1, available_height - 24 - base - 8 - height))
             natural = max(1, round(content_width * size.height() / size.width())) if size.isValid() else min(280, round(content_width * .6))
             image_h = min(budget, natural)
-        result = text, height, image_h, 98 + height + (8 + image_h if image_h else 0)
+        result = text, height, image_h, base + height + (8 + image_h if image_h else 0)
         self.metric_cache[key] = result
         if len(self.metric_cache)>1024:
             self.metric_cache.popitem(last=False)
@@ -351,7 +394,7 @@ class Cards(QStyledItemDelegate):
         r = option.rect.adjusted(1, 4, -1, -4)
         selected = bool(option.state & option.state.State_Selected)
         painter.setBrush(QColor(self.theme.selected if selected else self.theme.card))
-        painter.setPen(QPen(QColor(self.theme.accent if selected else self.theme.line), 1))
+        painter.setPen(QPen(QColor(self.theme.accent if selected else self.theme.line), 3 if selected else 1))
         painter.drawRoundedRect(r, 8, 8)
         left, top = r.x() + 12, r.y() + 12
         painter.setBrush(QColor(self.theme.selected))
@@ -359,24 +402,26 @@ class Cards(QStyledItemDelegate):
         painter.drawEllipse(left, top, 28, 28)
         f = QFont(self.font)
         f.setBold(True)
+        head, footer_h, _ = self.geometry()
+        author_h = max(18, QFontMetrics(f).height())
         painter.setFont(f)
         painter.setPen(QColor(self.theme.accent))
         painter.drawText(left, top, 28, 28, Qt.AlignmentFlag.AlignCenter, post.author[:1].upper())
         painter.setPen(QColor(self.theme.text))
-        painter.drawText(left + 38, top - 2, r.width() - 112, 18, Qt.AlignmentFlag.AlignVCenter,
+        painter.drawText(left + 38, top - 2, r.width() - 112, author_h, Qt.AlignmentFlag.AlignVCenter,
                          QFontMetrics(f).elidedText(post.author, Qt.TextElideMode.ElideRight, r.width() - 120))
-        f.setBold(False)
-        f.setPointSize(8)
+        f.setBold(self.font.bold())
+        f.setPointSizeF(8*self.scale)
         painter.setFont(f)
         painter.setPen(QColor(self.theme.muted))
-        painter.drawText(left + 38, top + 15, r.width() - 85, 16, Qt.AlignmentFlag.AlignVCenter,
+        painter.drawText(left + 38, top + author_h - 3, r.width() - 60, max(16,QFontMetrics(f).height()), Qt.AlignmentFlag.AlignVCenter,
                          QFontMetrics(f).elidedText("@" + post.handle, Qt.TextElideMode.ElideRight, r.width() - 95))
         painter.drawText(r.right() - 66, top, 48, 20, Qt.AlignmentFlag.AlignRight, age(post.created))
         text, text_h, image_h, _ = self.metrics(post, option.rect.width())
         painter.setFont(self.font)
         covered = is_covered(post,self.revealed,self.auto_cw)
         painter.setPen(QColor(self.theme.warning if covered else self.theme.text))
-        body_y = top + 38
+        body_y = top + head
         painter.setClipRect(left, body_y, r.width() - 24, text_h)
         painter.drawText(left, body_y, r.width() - 24, text_h + 30, Qt.TextFlag.TextWordWrap, text)
         painter.setClipping(False)
@@ -405,12 +450,24 @@ class Cards(QStyledItemDelegate):
         footer = f"↩ {post.replies}    ↻ {post.boosts}    ♡ {post.likes}"
         if post.saved:
             footer += "    ★ Saved"
-        painter.drawText(left, r.bottom() - 23, min(230, r.width()//2), 16, Qt.AlignmentFlag.AlignVCenter, footer)
+        footer_width = max(1, r.width()//2)
+        painter.drawText(left, r.bottom() - footer_h - 7, footer_width, footer_h, Qt.AlignmentFlag.AlignVCenter,
+                         QFontMetrics(f).elidedText(footer, Qt.TextElideMode.ElideRight, footer_width))
         painter.setPen(QColor(self.theme.muted))
         server_width = max(80, r.width()//2 - 24)
-        painter.drawText(r.right() - server_width - 12, r.bottom() - 23, server_width, 16, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        painter.drawText(r.right() - server_width - 12, r.bottom() - footer_h - 7, server_width, footer_h, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                          QFontMetrics(f).elidedText(post.server, Qt.TextElideMode.ElideLeft, server_width))
         painter.restore()
+
+
+class TextCards(QStyledItemDelegate):
+    """Standard Qt text rendering and model accessibility for the reader feed."""
+    def sizeHint(self, option, index):
+        width = self.parent().viewport().width()
+        fm = QFontMetrics(self.parent().font())
+        h = fm.boundingRect(0, 0, max(1, width-24), 10000,
+                            Qt.TextFlag.TextWordWrap, index.data()).height()
+        return QSize(width, max(fm.height()+24, h+24))
 
 
 class Detail(QWidget):
@@ -423,7 +480,7 @@ class Detail(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
         self.heading = label("Take a closer look", "pageTitle", True)
-        self.heading.setStyleSheet("font-size: 18px;")
+        styled(self.heading, "font-size: 18px;")
         self.handle = label("Select a post to read it here.", "muted", True)
         self.meta = label("", "muted", True)
         self.warning = label("", "muted", True)
@@ -432,7 +489,9 @@ class Detail(QWidget):
         self.body.setOpenLinks(False)
         self.body.setOpenExternalLinks(False)
         self.body.anchorClicked.connect(lambda u: self.window.open_url(u.toString()))
-        self.body.setStyleSheet("QTextBrowser { font-size: 15px; line-height: 1.5; }")
+        styled(self.body, "QTextBrowser { font-size: 15px; line-height: 1.5; }")
+        self.body.setAccessibleName("Post text")
+        self.body.setMinimumHeight(100)
         self.picture = QLabel()
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.picture.setMinimumHeight(0)
@@ -440,14 +499,16 @@ class Detail(QWidget):
         self.picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.attachments = QComboBox()
         self.attachments.setToolTip("Select a media attachment")
+        self.attachments.setAccessibleName("Media attachments and descriptions")
         self.attachments.setMinimumContentsLength(10)
         self.attachments.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.attachments.currentIndexChanged.connect(self.update_image)
         self.media_open = button("↗", self.open_media)
         self.media_open.setToolTip("Open selected attachment")
-        self.media_open.setFixedWidth(36)
+        self.media_open.setAccessibleName("Open selected attachment in browser")
         self.open = button("Original ↗", lambda: self.window.open_url(self.post.url) if self.post else None, "primary")
         row = QHBoxLayout()
+        self.actions_row = row
         self.save = button("☆ Save", self.toggle_save)
         self.copy = button("Copy", lambda: QApplication.clipboard().setText(self.post.url) if self.post else None)
         self.copy.setToolTip("Copy post link")
@@ -461,6 +522,9 @@ class Detail(QWidget):
             layout.addWidget(w)
         layout.addWidget(self.body, 1)
         layout.addWidget(self.picture)
+        self.alt = label("", "", True)
+        self.alt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        layout.addWidget(self.alt)
         media_row = QHBoxLayout()
         media_row.addWidget(self.attachments, 1)
         media_row.addWidget(self.media_open)
@@ -473,6 +537,9 @@ class Detail(QWidget):
         for w in (self.warning, self.reveal, self.picture, self.attachments, self.media_open, self.open, self.save, self.copy, self.mute):
             w.hide()
         self.picture.clear()
+        self.picture.setAccessibleName("")
+        self.alt.clear()
+        self.alt.hide()
         if not post:
             self.heading.setText("Take a closer look")
             self.handle.setText("Select a post to read it here.")
@@ -500,12 +567,14 @@ class Detail(QWidget):
         for w in (self.open, self.save, self.copy, self.mute):
             w.show()
         self.save.setText("★ Saved" if post.saved else "☆ Save")
+        self.save.setAccessibleName("Unsave post" if post.saved else "Save post")
 
     def reveal_post(self):
         if self.post:
             self.window.revealed.add(self.post.uri)
             self.set_post(self.post)
             self.window.relayout_feed()
+            self.window.model.descriptions_changed()
             self.window.feed.viewport().update()
             self.window.schedule_images()
 
@@ -515,10 +584,20 @@ class Detail(QWidget):
 
     def update_image(self, *_):
         url = self.image_url()
-        pix = self.window.images.get(url)
+        media = self.attachments.currentData() or {}
+        description = media.get("alt") or ("No description provided." if media else "")
+        self.alt.setText("Attachment description: " + description if description else "")
+        self.alt.setVisible(bool(description))
+        self.picture.setAccessibleName(description)
+        if self.window.accessibility.hide_images:
+            self.picture.clear()
+            self.picture.hide()
+            return
+        pix = self.window.images.fitted(url, QSize(max(100, self.width()-20), min(160, max(70, self.window.height()//5))),
+                                        self.devicePixelRatioF())
         self.picture.setVisible(bool(url))
         if pix:
-            self.picture.setPixmap(pix.scaled(max(100, self.width()-20), min(160, max(70, self.window.height()//5)), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.picture.setPixmap(pix)
         elif url:
             self.picture.setText("Loading preview…" if url not in self.window.images.failed else "Preview unavailable")
             self.window.images.ensure(url)
@@ -537,6 +616,7 @@ class Window(QMainWindow):
     def __init__(self, store, data_dir, demo=False):
         super().__init__()
         self.store, self.data_dir, self.demo = store, Path(data_dir), demo
+        self.accessibility = Accessibility.load(store.setting("accessibility", {}))
         self.theme = get_theme(store.setting("theme", "bub"))
         self.setWindowTitle(f"Activity Bub · {__version__}")
         available = QApplication.primaryScreen().availableGeometry()
@@ -562,7 +642,7 @@ class Window(QMainWindow):
         self.worker.event.connect(self.on_event)
         self.images = Images(self.worker.engine.stop, self, network=self.worker.engine.network)
         self.images.pool.setMaxThreadCount(self.worker.engine.profile.images)
-        self.images.blocked = lambda: self.demo or self.closing or self.worker.engine.paused.is_set()
+        self.images.blocked = lambda: self.demo or self.closing or self.accessibility.hide_images or self.worker.engine.paused.is_set()
         self.images.changed.connect(self.image_changed)
         self.image_timer = QTimer(self)
         self.image_timer.setSingleShot(True)
@@ -609,7 +689,9 @@ class Window(QMainWindow):
         top = QHBoxLayout()
         top.setSpacing(6)
         brand = label("activity bub")
-        brand.setStyleSheet("font-size: 16px; font-weight: 700;")
+        styled(brand, "font-size: 16px; font-weight: 700;")
+        self.brand = brand
+        self.top_row = top
         icon = label("")
         icon.setPixmap(self.windowIcon().pixmap(24,24))
         top.addWidget(icon)
@@ -626,7 +708,8 @@ class Window(QMainWindow):
         self.title.setMenu(navigation)
         top.addWidget(self.title)
         self.new_posts = button("↑", self.refresh_feed)
-        self.new_posts.setFixedWidth(62)
+        self.new_posts.setMinimumWidth(45)
+        self.new_posts.setAccessibleName("Jump to newest posts")
         self.new_posts.setToolTip("Jump to newest posts (R)")
         top.addWidget(self.new_posts)
         self.pause = button("Pause", self.toggle_pause)
@@ -634,6 +717,8 @@ class Window(QMainWindow):
         top.addWidget(self.pause)
         menu_button = button("⋯")
         menu_button.setToolTip("Servers and preferences")
+        menu_button.setAccessibleName("Menu, themes and accessibility")
+        self.menu_button = menu_button
         options = QMenu(menu_button)
         self.discover = options.addAction("Discover servers")
         self.discover.setCheckable(True)
@@ -672,6 +757,7 @@ class Window(QMainWindow):
         options.addSeparator()
         options.addAction("Add servers…", self.add_servers)
         options.addAction("Preferences…", self.preferences)
+        self.accessibility_action = options.addAction("Accessibility… · Ctrl+Alt+A", self.accessibility_dialog)
         menu_button.setMenu(options)
         top.addWidget(menu_button)
         area.addLayout(top)
@@ -692,6 +778,7 @@ class Window(QMainWindow):
         self.search.setMinimumWidth(80)
         self.search_clear = add_clear_action(self.search)
         self.search.setToolTip("Search downloaded posts")
+        self.search.setAccessibleName("Search downloaded posts or people")
         search_row.addWidget(self.search, 1)
         self.filter_button = button("Filters", self.toggle_filters)
         self.filter_button.setCheckable(True)
@@ -702,6 +789,7 @@ class Window(QMainWindow):
         filters.setContentsMargins(0, 0, 0, 0)
         filters.setSpacing(10)
         self.language = QComboBox()
+        self.language.setAccessibleName("Post language filter")
         for caption, code in (("All languages", ""), ("English", "en"), ("日本語", "ja"), ("Deutsch", "de"), ("Español", "es"), ("Français", "fr"), ("Português", "pt"), ("Unknown language", "__unknown__")):
             self.language.addItem(caption, code)
         self.media = QCheckBox("Media")
@@ -716,6 +804,8 @@ class Window(QMainWindow):
         self.empty.setMinimumHeight(100)
         feed_layout.addWidget(self.empty)
         self.feed = SmoothFeedView()
+        self.feed.setAccessibleName("Public post feed")
+        self.feed.setAccessibleDescription("Up and down arrows select a post. Enter reads it. B saves it. Control F searches.")
         self.feed.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.feed.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.feed.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -723,8 +813,10 @@ class Window(QMainWindow):
         self.feed.setLayoutMode(QListView.LayoutMode.SinglePass)
         self.feed.setWordWrap(True)
         self.model = FeedModel(self)
+        self.model.covered = self.covered
         self.feed.setModel(self.model)
         self.delegate = Cards(self.images, self.revealed, self.feed)
+        self.text_delegate = TextCards(self.feed)
         self.delegate.auto_cw = self.auto_cw_enabled
         self.feed.setItemDelegate(self.delegate)
         self.feed.clicked.connect(self.open_reader)
@@ -741,6 +833,7 @@ class Window(QMainWindow):
             self.feed.addAction(action)
         feed_layout.addWidget(self.feed, 1)
         footer = QHBoxLayout()
+        self.footer_row = footer
         footer.setSpacing(6)
         self.history_note = label("Scroll for more", "muted", True)
         self.history_note.setParent(self)
@@ -761,7 +854,7 @@ class Window(QMainWindow):
         self.doom_speed.setToolTip("Auto Doom speed · 0.25×–4×")
         self.doom_speed.setValue(max(25,min(400,int(self.store.setting("autodoom_speed",100)))))
         self.speed_label = label(f"{self.doom_speed.value()/100:g}×","muted")
-        self.speed_label.setFixedWidth(44)
+        self.speed_label.setMinimumWidth(44)
         self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.doom_speed.valueChanged.connect(self.set_doom_speed)
         self.feed.set_auto_speed(self.doom_speed.value()*.6)
@@ -777,7 +870,23 @@ class Window(QMainWindow):
         self.more_button.setToolTip("Scroll for more")
         footer.addWidget(self.more_button)
         for control in (self.autodoom_button,self.auto_cw,self.more_button):
-            control.setStyleSheet("QPushButton { padding:5px 7px; font-size:11px; }")
+            styled(control, "QPushButton { padding:5px 7px; font-size:11px; }")
+        # Two compact groups can stack when text zoom needs the width.
+        while footer.count():
+            footer.takeAt(0)
+        self.motion_group = QWidget()
+        motion_row = QHBoxLayout(self.motion_group)
+        motion_row.setContentsMargins(0,0,0,0)
+        motion_row.addWidget(self.autodoom_button)
+        motion_row.addWidget(self.doom_speed, 1)
+        motion_row.addWidget(self.speed_label)
+        self.feed_actions = QWidget()
+        action_row = QHBoxLayout(self.feed_actions)
+        action_row.setContentsMargins(0,0,0,0)
+        action_row.addWidget(self.auto_cw)
+        action_row.addWidget(self.more_button)
+        footer.addWidget(self.motion_group, 1)
+        footer.addWidget(self.feed_actions)
         feed_layout.addLayout(footer)
         self.pages.addWidget(feed_page)
 
@@ -787,12 +896,16 @@ class Window(QMainWindow):
         reader_layout = QVBoxLayout(self.reader_dialog)
         reader_layout.setContentsMargins(6, 6, 6, 6)
         self.detail = Detail(self)
-        reader_layout.addWidget(self.detail, 1)
+        self.reader_scroll = QScrollArea()
+        self.reader_scroll.setWidgetResizable(True)
+        self.reader_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.reader_scroll.setWidget(self.detail)
+        reader_layout.addWidget(self.reader_scroll, 1)
         close_reader = button("Back to feed · Esc", self.reader_dialog.reject)
         reader_layout.addWidget(close_reader)
         self.build_radar()
         self.status = label("Connecting…", "muted")
-        self.status.setStyleSheet("font-size: 10px;")
+        styled(self.status, "font-size: 10px;")
         area.addWidget(self.status)
         self.engine_meter=button("MAX · starting…",self.engine_room)
         self.engine_meter.setMinimumWidth(1)
@@ -811,9 +924,16 @@ class Window(QMainWindow):
         self.hide_cw.toggled.connect(self.filters_changed)
         for key, fn in (("Ctrl+F", self.search.setFocus), ("R", self.refresh_feed),
                         ("B", self.save_selected), ("Ctrl+O", self.open_selected), ("Ctrl+J", self.surprise),
-                        ("Space", self.toggle_pause), ("D", self.autodoom_button.toggle)):
+                        ("Space", self.toggle_pause), ("D", self.autodoom_button.click)):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda fn=fn, key=key: fn() if key == "Ctrl+F" or not isinstance(QApplication.focusWidget(), QLineEdit) else None)
+        for key, fn in (("Ctrl+Alt+A", self.accessibility_dialog), ("Ctrl++", lambda: self.zoom(1)),
+                        ("Ctrl+=", lambda: self.zoom(1)), ("Ctrl+-", lambda: self.zoom(-1)),
+                        ("F6", self.feed.setFocus),
+                        ("Ctrl+0", lambda: self.set_accessibility(replace(self.accessibility, scale=100)))):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(fn)
 
     def toggle_filters(self):
         self.filter_panel.setVisible(self.filter_button.isChecked())
@@ -825,6 +945,7 @@ class Window(QMainWindow):
         layout.setContentsMargins(0, 8, 0, 0)
         bar = QHBoxLayout()
         self.server_search = QLineEdit()
+        self.server_search.setAccessibleName("Find a server")
         self.server_search.setPlaceholderText("Find a server…")
         self.server_search.textChanged.connect(self.refresh_radar)
         bar.addWidget(self.server_search, 1)
@@ -834,6 +955,7 @@ class Window(QMainWindow):
         self.server_summary = label("", "muted", True)
         layout.addWidget(self.server_summary)
         self.table = QTableWidget(0, 5)
+        self.table.setAccessibleName("Discovered public servers")
         self.table.setHorizontalHeaderLabels(["Server", "Software", "Status", "Posts found", "Last result"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1029,6 +1151,7 @@ class Window(QMainWindow):
         self.auto_cw_enabled = bool(enabled)
         self.store.set_setting("auto_cw",self.auto_cw_enabled)
         self.delegate.auto_cw = self.auto_cw_enabled
+        self.model.descriptions_changed()
         if self.detail.post:
             self.detail.set_post(self.detail.post)
         self.relayout_feed()
@@ -1036,7 +1159,11 @@ class Window(QMainWindow):
         self.schedule_images()
 
     def visible_images(self):
-        if self.demo or self.closing or self.worker.engine.paused.is_set() or self.mode == "servers":
+        if self.demo or self.closing or self.accessibility.hide_images or self.worker.engine.paused.is_set() or self.mode == "servers":
+            return
+        if self.accessibility.screen_reader:
+            if self.reader_dialog.isVisible() and self.detail.post and not self.covered(self.detail.post):
+                self.images.prioritize([self.detail.image_url()])
             return
         viewport = self.feed.viewport()
         height = viewport.height()
@@ -1122,6 +1249,7 @@ class Window(QMainWindow):
         self.reader_dialog.resize(min(560, self.width()-24), min(720, self.height()-24))
         self.reader_dialog.open()
         QTimer.singleShot(0, self.detail.update_image)
+        QTimer.singleShot(0, lambda: (self.detail.reveal if self.covered(post) else self.detail.body).setFocus())
         self.tick()
 
     def surprise(self):
@@ -1132,11 +1260,47 @@ class Window(QMainWindow):
             self.history_note.setText("No matching cached posts to explore yet")
 
     def apply_theme(self, key, persist=True):
-        self.theme = get_theme(key)
-        QApplication.instance().setStyleSheet(stylesheet(self.theme))
+        self.theme = adapt_theme(get_theme(key), self.accessibility)
+        self.images.set_visibility(self.accessibility)
+        app = QApplication.instance()
+        if not hasattr(app, "_bub_base_font"):
+            app._bub_base_font = QFont(app.font())
+        font = QFont(app._bub_base_font)
+        family = {"sans": "Sans Serif", "serif": "Serif", "mono": "Monospace"}.get(self.accessibility.font)
+        if family:
+            font.setFamily(family)
+        font.setPointSizeF(10*self.accessibility.scale/100)
+        font.setBold(self.accessibility.bold)
+        app.setFont(font)
+        extra = f"QWidget {{ font-family: '{font.family()}'; }}"
+        if self.accessibility.bold:
+            extra += "QWidget { font-weight:700; }"
+        extra += f"QPushButton:focus, QLineEdit:focus, QComboBox:focus, QCheckBox:focus, QListView:focus, QTextBrowser:focus, QSlider:focus {{ border:2px solid {self.theme.accent}; }}"
+        if self.accessibility.large_controls:
+            extra += "QPushButton, QComboBox, QLineEdit, QSpinBox { min-height:32px; padding:8px; } QSlider::handle:horizontal { width:22px; margin:-9px 0; } QScrollBar:vertical { width:18px; } QCheckBox::indicator { width:24px; height:24px; }"
+        app.setStyleSheet(scale_css(stylesheet(self.theme)+extra, self.accessibility.scale))
         self.delegate.theme = self.theme
+        self.delegate.font = QFont(font)
+        self.delegate.scale = self.accessibility.scale/100
+        self.delegate.hide_images = self.accessibility.hide_images
+        self.delegate.metric_cache.clear()
+        if self.accessibility.hide_images or self.accessibility.screen_reader:
+            self.images.prioritize([])
+        self.feed.setItemDelegate(self.text_delegate if self.accessibility.screen_reader else self.delegate)
+        self.feed.set_reduced_motion(self.accessibility.motion_off)
+        self.autodoom_button.setEnabled(not self.accessibility.motion_off)
+        self.doom_speed.setEnabled(not self.accessibility.motion_off)
+        self.autodoom_button.setToolTip("Auto Doom is disabled by reduced motion or screen-reader mode." if self.accessibility.motion_off else "Hands-free scrolling · D toggles · manual scrolling pauses")
+        if self.accessibility.motion_off:
+            self.auto_state_changed(False)
+        if self.accessibility.screen_reader:
+            QAccessible.setActive(True)
+        for widget in self.findChildren(QWidget):
+            base = widget.property("bub_style")
+            if base:
+                widget.setStyleSheet(scale_css(base, self.accessibility.scale))
         self.search_clear.setIcon(clear_icon(self.theme.muted))
-        self.engine_meter.setStyleSheet(f"QPushButton {{ border:0; padding:1px 0; background:transparent; color:{self.theme.muted}; font-size:10px; text-align:left; }} QPushButton:hover {{ color:{self.theme.accent}; }}")
+        styled(self.engine_meter, f"QPushButton {{ border:0; padding:1px 0; background:transparent; color:{self.theme.muted}; font-size:10px; text-align:left; }} QPushButton:hover {{ color:{self.theme.accent}; }} QPushButton:focus {{ border:2px solid {self.theme.accent}; }}", self.accessibility.scale)
         for name, action in self.theme_actions.items():
             action.setChecked(name == self.theme.key)
         self.detail.body.document().setDefaultStyleSheet(f"a {{ color: {self.theme.accent}; }}")
@@ -1148,8 +1312,94 @@ class Window(QMainWindow):
                 tried.add(self.theme.key)
                 self.store.set_setting("tried_themes", sorted(tried))
         self.feed.viewport().update()
+        self.model.descriptions_changed()
+        self.reflow_accessibility()
+        if hasattr(self, "timer"):
+            self.tick()
+        QTimer.singleShot(0, self.relayout_feed)
+        self.schedule_images()
         if self.mode == "servers":
             self.refresh_radar()
+
+    def set_accessibility(self, prefs):
+        self.accessibility = Accessibility.load(prefs.saved())
+        self.store.set_setting("accessibility", self.accessibility.saved())
+        self.apply_theme(self.theme.key, persist=False)
+
+    def zoom(self, direction):
+        index = SCALES.index(self.accessibility.scale)
+        self.set_accessibility(replace(self.accessibility, scale=SCALES[max(0,min(len(SCALES)-1,index+direction))]))
+
+    def reflow_accessibility(self):
+        self.brand.setVisible(self.accessibility.scale <= 125 and self.width() >= 600)
+        amount = str(self.pending) if self.pending < 1000 else f"{self.pending/1000:.1f}k"
+        self.new_posts.setText(f"+{amount} ↑" if self.pending and self.accessibility.scale <= 125 else "↑")
+        self.footer_row.setDirection(QBoxLayout.Direction.TopToBottom if self.accessibility.scale >= 150 or self.accessibility.large_controls else QBoxLayout.Direction.LeftToRight)
+        self.detail.actions_row.setDirection(QBoxLayout.Direction.TopToBottom if self.accessibility.scale >= 150 or self.accessibility.large_controls else QBoxLayout.Direction.LeftToRight)
+        self.speed_label.setMinimumWidth(self.speed_label.fontMetrics().horizontalAdvance("2.25×")+8)
+        self.table.verticalHeader().setDefaultSectionSize(max(32, self.table.fontMetrics().height()+16))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "brand") and hasattr(self, "table"):
+            self.reflow_accessibility()
+
+    def accessibility_dialog(self):
+        self.feed.stop_all_scrolling()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Activity Bub · Accessibility")
+        dialog.resize(min(560, self.width()-24), min(700, self.height()-24))
+        layout = QVBoxLayout(dialog)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        form = QFormLayout(content)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        form.addRow(label("Color and contrast settings also filter feed and reader images by default. Turn off image filters below to compare original colors. Ctrl+Plus / Minus zooms; Ctrl+0 resets zoom.", wrap=True))
+        controls = {}
+        for name, caption, choices in (("vision", "Color visibility", VISION_OPTIONS),
+                ("contrast", "Contrast", CONTRAST_OPTIONS), ("scale", "Text and interface size", tuple((v, f"{v}%") for v in SCALES)),
+                ("font", "Reading font", FONT_OPTIONS)):
+            control = QComboBox()
+            control.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            control.setMinimumContentsLength(12)
+            control.setAccessibleName(caption)
+            for value, text in choices:
+                control.addItem(text, value)
+            control.setCurrentIndex(control.findData(getattr(self.accessibility, name)))
+            form.addRow(caption, control)
+            controls[name] = control
+        for name, caption in (("bold", "Bold text"), ("large_controls", "Larger buttons and scrollbars"),
+                ("image_filters", "Apply color and contrast settings to images"),
+                ("hide_images", "Hide image previews · keep descriptions"),
+                ("reduce_motion", "Reduce motion · no smooth scroll or Auto Doom"),
+                ("screen_reader", "Screen-reader mode · native text feed, no animated scrolling")):
+            control = QCheckBox(textwrap.fill(caption, max(20, 48*100//self.accessibility.scale)))
+            control.setAccessibleName(caption)
+            control.setChecked(getattr(self.accessibility, name))
+            form.addRow(control)
+            controls[name] = control
+        form.addRow(label("Screen-reader mode exposes post text, warnings, counts and attachment descriptions to your system's assistive technology. Enter opens the full post. CW content stays hidden until revealed. If your reader does not attach immediately, restart Activity Bub after enabling this setting, or launch with --screen-reader.", wrap=True))
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        reset = button("Reset accessibility defaults")
+        def defaults():
+            for name, control in controls.items():
+                value = getattr(Accessibility(), name)
+                if isinstance(control, QComboBox):
+                    control.setCurrentIndex(control.findData(value))
+                else:
+                    control.setChecked(value)
+        reset.clicked.connect(defaults)
+        layout.addWidget(reset)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec():
+            values = {name: control.currentData() if isinstance(control, QComboBox) else control.isChecked()
+                      for name, control in controls.items()}
+            self.set_accessibility(Accessibility.load(values))
 
     def show_passport(self):
         progress = self.store.passport()
@@ -1202,8 +1452,10 @@ class Window(QMainWindow):
         if post.saved and self.store.setting("rewards", True):
             self.store.stamp_keep(post.uri)
         self.feed.viewport().update()
+        self.model.descriptions_changed()
         if self.detail.post and self.detail.post.seq == post.seq:
             self.detail.save.setText("★ Saved" if post.saved else "☆ Save")
+            self.detail.save.setAccessibleName("Unsave post" if post.saved else "Save post")
         self.tick()
 
     def save_selected(self):
@@ -1271,7 +1523,8 @@ class Window(QMainWindow):
             else:
                 if self.pending:
                     amount = str(self.pending) if self.pending < 1000 else f"{self.pending/1000:.1f}k"
-                    self.new_posts.setText(f"+{amount} ↑")
+                    self.new_posts.setText(f"+{amount} ↑" if self.accessibility.scale <= 125 else "↑")
+                    self.new_posts.setAccessibleName(f"Jump to {self.pending:,} newest posts")
                     self.new_posts.setToolTip(f"{self.pending:,} new finds · Refresh feed")
                 sb = self.feed.verticalScrollBar()
                 if (sb.value() > 0 or self.feed.auto_active or kind == "history" and sb.maximum() == 0) and sb.value() >= sb.maximum() - 500 and self.mode != "servers":
@@ -1300,6 +1553,7 @@ class Window(QMainWindow):
             state=("DEMO · " if self.demo else "")+"Auto Doom"+(" · buffering" if waiting else "")
         summary = f"{state} · {s['servers']:,} servers · {s['ready']:,} feeds · {s['posts']:,} posts"
         self.status.setText(QFontMetrics(self.status.font()).elidedText(summary, Qt.TextElideMode.ElideRight, max(100, self.column.width())))
+        self.status.setAccessibleName(summary)
         self.status.setToolTip(safe_tooltip(summary + f"\n{progress['rank']} · {progress['xp']:,} XP" + "\n" + "\n".join(list(self.logs)[-8:])))
         if self.mode == "servers":
             self.refresh_radar()
@@ -1323,7 +1577,8 @@ class Window(QMainWindow):
         rate=s["bps"]/(1024*1024) if s["bps"]>=1024*1024 else s["bps"]/1024
         unit="M/s" if s["bps"]>=1024*1024 else "K/s"
         text=f"{s['profile'].upper()}  D{jobs['discovery']} F{jobs['feed']} H{jobs['history']}/{sum(limits.values())}  · {s['rps']:.1f} req/s  ↓{rate:.0f}{unit}  +{s['pps']:.0f}/s"
-        self.engine_meter.setText(text)
+        self.engine_meter.setText(QFontMetrics(self.engine_meter.font()).elidedText(text, Qt.TextElideMode.ElideRight, max(80,self.column.width()-12)))
+        self.engine_meter.setAccessibleName("Engine room. " + text)
         resource=(f"CPU {s['cpu']:.0f}% · RAM {s['rss']/1024**2:.0f} MiB · {s['threads']} app threads" if s["resources_available"] else "Process CPU/RAM/thread counters unavailable on this system")
         detail=(f"Discovery {jobs['discovery']}/{limits['discovery']} · Live {jobs['feed']}/{limits['feed']} · History {jobs['history']}/{limits['history']}\\n"
                 f"{s['http_active']} HTTP requests active · {s['latency_ms']:.0f} ms mean request latency\\n"

@@ -23,7 +23,7 @@ Other Linux release files may have a newer minimum; consult BUILD-INFO.json and
 the release notes. Windows builds target Windows 10/11 x86-64. Native desktop
 testing beyond the automated smoke check remains a release-maintainer task.
 
-The locally built 0.4.0 Linux archive requires glibc 2.39 or newer. If your
+The locally built 0.5.1 Linux archive requires glibc 2.39 or newer. If your
 desktop reports a missing `libxcb-cursor.so.0`, install your distribution's
 xcb-cursor package. Headless smoke tests cannot verify the compositor libraries
 provided by your desktop.
@@ -39,3 +39,13 @@ Auto Doom, speed, and Auto CW are in the feed footer. D toggles scrolling;
 manual scrolling or opening a post pauses it. Auto CW reveals flagged content
 and permits its preview loading; Hide CW still filters such posts out. Speed
 and Auto CW persist, but scrolling does not restart automatically on launch.
+
+Open ⋯ → Accessibility (Ctrl+Alt+A) for color visibility, high contrast, text
+size, reading fonts, larger controls, reduced motion and screen-reader mode.
+Ctrl+Plus / Minus zoom; Ctrl+0 resets zoom. F6 focuses the feed. Launch with
+`--screen-reader` to enable the native text feed before opening the window.
+Reduce motion and screen-reader mode disable animated scrolling and Auto Doom.
+Hide image previews keeps descriptions. Real screen-reader desktop sessions
+remain unverified; the source includes the full accessibility guide and tests.
+Color and contrast settings also filter feed and reader image pixels by default.
+Switch off Apply color and contrast settings to images for original colors.

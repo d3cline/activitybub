@@ -53,13 +53,20 @@ preview. See [portable notes](docs/PORTABLE.md) for platform requirements.
 - **Make it yours:** six saved color themes, from lime and violet to a light
   paper palette. Search, language/media/CW filters, muted phrases, authors,
   servers, and local bookmarks.
+- **See and read comfortably:** saved blue/yellow, red-sensitive, green-sensitive,
+  monochrome, and warm colors; dark/light high contrast; 100–200%
+  text size; reading fonts; bold text; larger controls; reduced motion; and
+  image-free reading with attachment descriptions. Screen-reader mode provides
+  a native text feed and stops animated scrolling. Color and contrast filters
+  also apply to feed and reader images by default; originals remain available
+  by switching image filters off. [Accessibility guide](docs/ACCESSIBILITY.md).
 - **Collect worlds:** an optional local passport with XP, six ranks, and eight
   badges. Reading a new server gives 25 XP; a first-time save gives 10 XP.
   Reopening the same server or toggling a bookmark does not farm points.
 - **Get pleasantly lost:** Surprise me jumps to a random cached post while
   respecting filters and mutes.
 
-Themes, passport, Surprise me, discovery, and Preferences live in the **⋯** menu.
+Themes, accessibility, passport, Surprise me, discovery, and Preferences live in the **⋯** menu.
 Feed / Saved / Server radar are in the view menu. The window starts around 800
 pixels wide and resizes down to 460 × 400, with a centered 720-pixel feed limit.
 
@@ -77,6 +84,9 @@ pixels wide and resizes down to 460 × 400, with a centered 720-pixel feed limit
 | Ctrl+O | Open the original in your browser |
 | Ctrl+J | Surprise me |
 | Ctrl+F | Search downloaded posts |
+| Ctrl+Alt+A | Open accessibility settings |
+| Ctrl+Plus / Ctrl+Minus / Ctrl+0 | Enlarge, reduce, or reset text size |
+| F6 | Move keyboard focus to the feed |
 | R / ↑ | Refresh from the latest cached posts |
 | Space / Pause | Pause or resume new requests |
 
