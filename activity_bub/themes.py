@@ -49,6 +49,9 @@ QComboBox::drop-down {{ border: 0; width: 20px; }}
 QCheckBox {{ spacing: 7px; background: transparent; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {t.line}; border-radius: 4px; background: {t.panel}; }}
 QCheckBox::indicator:checked {{ background: {t.accent}; border-color: {t.accent}; }}
+QSlider::groove:horizontal {{ height: 4px; background: {t.line}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {t.accent}; border-radius: 2px; }}
+QSlider::handle:horizontal {{ width: 12px; margin: -5px 0; background: {t.accent}; border-radius: 6px; }}
 QListView, QTableWidget, QListWidget, QTextBrowser {{ background: {t.bg}; border: 0; outline: 0; selection-background-color: {t.selected}; }}
 QTableWidget {{ gridline-color: {t.line}; alternate-background-color: {t.panel}; }}
 QHeaderView::section {{ background: {t.panel}; border: 0; border-bottom: 1px solid {t.line}; color: {t.muted}; padding: 8px; }}

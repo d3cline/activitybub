@@ -1,5 +1,10 @@
 # Activity Bub 0.3.2 security review
 
+0.4.0 adds optional Auto CW. Enabling it explicitly reveals flagged posts and
+permits their nearby previews; the same restricted decoder remains mandatory.
+Disabling Auto CW re-covers automatic reveals. This changes content presentation,
+not the image worker's privileges, limits, or format allowlist.
+
 Scope: hostile public-server API responses, image previews, post rendering, URL
 launches, and the local cache. Reviewed against the 0.3.1 source, then hardened
 and tested locally on Linux x86-64. This is a source review plus synthetic

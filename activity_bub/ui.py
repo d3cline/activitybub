@@ -16,7 +16,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListView, QListWidget, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy,
-    QProgressBar, QSpinBox, QSplitter, QStackedWidget, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QProgressBar, QSlider, QSpinBox, QSplitter, QStackedWidget, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QTextBrowser, QVBoxLayout, QWidget)
 
 from . import __version__
@@ -256,6 +256,10 @@ def preview(post):
     return m.get("preview") or (m.get("url") if str(m.get("type", "")).startswith("image") else "")
 
 
+def is_covered(post, revealed, auto_cw=False):
+    return bool(post.warning or post.sensitive) and not auto_cw and post.uri not in revealed
+
+
 class FeedModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -298,13 +302,14 @@ class Cards(QStyledItemDelegate):
     def __init__(self, images, revealed, parent=None):
         super().__init__(parent)
         self.images, self.revealed = images, revealed
+        self.auto_cw = False
         self.theme = get_theme("bub")
         self.font = QFont(QApplication.font())
         self.font.setPointSize(10)
         self.metric_cache = OrderedDict()
 
     def metrics(self, post, width):
-        covered = bool(post.warning or post.sensitive) and post.uri not in self.revealed
+        covered = is_covered(post,self.revealed,self.auto_cw)
         limit = 200 if post.media else 300
         text = ("CW · " + (post.warning or "Sensitive media") + "\nClick to reveal.") if covered else (post.text[:limit] + ("…" if len(post.text) > limit else ""))
         size = self.images.image_size(preview(post))
@@ -369,7 +374,7 @@ class Cards(QStyledItemDelegate):
         painter.drawText(r.right() - 66, top, 48, 20, Qt.AlignmentFlag.AlignRight, age(post.created))
         text, text_h, image_h, _ = self.metrics(post, option.rect.width())
         painter.setFont(self.font)
-        covered = bool(post.warning or post.sensitive) and post.uri not in self.revealed
+        covered = is_covered(post,self.revealed,self.auto_cw)
         painter.setPen(QColor(self.theme.warning if covered else self.theme.text))
         body_y = top + 38
         painter.setClipRect(left, body_y, r.width() - 24, text_h)
@@ -478,7 +483,7 @@ class Detail(QWidget):
         self.handle.setText("@" + post.handle)
         date = datetime.fromtimestamp(post.created).astimezone().strftime("%b %d, %Y · %H:%M") if post.created else "Unknown post date"
         self.meta.setText(post.server + "\n" + date + (" · " + post.language if post.language else ""))
-        covered = bool(post.warning or post.sensitive) and post.uri not in self.window.revealed
+        covered = self.window.covered(post)
         self.warning.setText("CW · " + (post.warning or "Sensitive media"))
         self.warning.setVisible(bool(post.warning or post.sensitive))
         self.reveal.setVisible(covered)
@@ -540,6 +545,7 @@ class Window(QMainWindow):
         icon_path = Path(__file__).parent / "assets" / "activity-bub.png"
         self.setWindowIcon(QIcon(str(icon_path)))
         self.revealed = set()
+        self.auto_cw_enabled = bool(store.setting("auto_cw",False))
         self.pending = 0
         self.latest = 0
         self.before = None
@@ -566,6 +572,10 @@ class Window(QMainWindow):
         self.layout_timer.setSingleShot(True)
         self.layout_timer.setInterval(0)
         self.layout_timer.timeout.connect(self.relayout_feed)
+        self.auto_more = QTimer(self)
+        self.auto_more.setSingleShot(True)
+        self.auto_more.setInterval(200)
+        self.auto_more.timeout.connect(self.auto_load_more)
         self.build()
         self.load_preferences()
         self.apply_theme(self.theme.key, persist=False)
@@ -715,6 +725,7 @@ class Window(QMainWindow):
         self.model = FeedModel(self)
         self.feed.setModel(self.model)
         self.delegate = Cards(self.images, self.revealed, self.feed)
+        self.delegate.auto_cw = self.auto_cw_enabled
         self.feed.setItemDelegate(self.delegate)
         self.feed.clicked.connect(self.open_reader)
         self.feed.activated.connect(self.open_reader)
@@ -730,10 +741,43 @@ class Window(QMainWindow):
             self.feed.addAction(action)
         feed_layout.addWidget(self.feed, 1)
         footer = QHBoxLayout()
+        footer.setSpacing(6)
         self.history_note = label("Scroll for more", "muted", True)
-        self.history_note.setStyleSheet("font-size: 11px;")
-        footer.addWidget(self.history_note, 1)
-        footer.addWidget(button("More ↓", self.load_more))
+        self.history_note.setParent(self)
+        self.history_note.hide()
+        self.autodoom_button = button("▶ Auto Doom")
+        self.autodoom_button.setCheckable(True)
+        self.autodoom_button.setToolTip("Hands-free scrolling · D toggles · manual scrolling pauses")
+        self.autodoom_button.toggled.connect(self.feed.set_auto_scroll)
+        self.feed.autoChanged.connect(self.auto_state_changed)
+        self.feed.needsMore.connect(self.request_auto_more)
+        footer.addWidget(self.autodoom_button)
+        self.doom_speed = QSlider(Qt.Orientation.Horizontal)
+        self.doom_speed.setRange(25,400)
+        self.doom_speed.setSingleStep(25)
+        self.doom_speed.setPageStep(50)
+        self.doom_speed.setMinimumWidth(60)
+        self.doom_speed.setAccessibleName("Auto Doom speed")
+        self.doom_speed.setToolTip("Auto Doom speed · 0.25×–4×")
+        self.doom_speed.setValue(max(25,min(400,int(self.store.setting("autodoom_speed",100)))))
+        self.speed_label = label(f"{self.doom_speed.value()/100:g}×","muted")
+        self.speed_label.setFixedWidth(44)
+        self.speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.doom_speed.valueChanged.connect(self.set_doom_speed)
+        self.feed.set_auto_speed(self.doom_speed.value()*.6)
+        footer.addWidget(self.doom_speed,1)
+        footer.addWidget(self.speed_label)
+        self.auto_cw = button("Auto CW")
+        self.auto_cw.setCheckable(True)
+        self.auto_cw.setChecked(self.auto_cw_enabled)
+        self.auto_cw.setToolTip("Automatically reveal CW and sensitive posts that pass your filters")
+        self.auto_cw.toggled.connect(self.set_auto_cw)
+        footer.addWidget(self.auto_cw)
+        self.more_button = button("More ↓",self.load_more)
+        self.more_button.setToolTip("Scroll for more")
+        footer.addWidget(self.more_button)
+        for control in (self.autodoom_button,self.auto_cw,self.more_button):
+            control.setStyleSheet("QPushButton { padding:5px 7px; font-size:11px; }")
         feed_layout.addLayout(footer)
         self.pages.addWidget(feed_page)
 
@@ -767,7 +811,7 @@ class Window(QMainWindow):
         self.hide_cw.toggled.connect(self.filters_changed)
         for key, fn in (("Ctrl+F", self.search.setFocus), ("R", self.refresh_feed),
                         ("B", self.save_selected), ("Ctrl+O", self.open_selected), ("Ctrl+J", self.surprise),
-                        ("Space", self.toggle_pause)):
+                        ("Space", self.toggle_pause), ("D", self.autodoom_button.toggle)):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda fn=fn, key=key: fn() if key == "Ctrl+F" or not isinstance(QApplication.focusWidget(), QLineEdit) else None)
 
@@ -845,6 +889,7 @@ class Window(QMainWindow):
         self.refresh_feed()
 
     def refresh_feed(self):
+        self.feed.set_auto_scroll(False)
         self.feed.stop_scrolling()
         self._scroll_direction = 1
         self._last_scroll_value = 0
@@ -913,6 +958,8 @@ class Window(QMainWindow):
                 self.history_note.setText("Reaching further back across readable servers…")
             else:
                 self.history_note.setText("No more matching cached posts yet")
+                self.feed.set_auto_scroll(False)
+            self.more_button.setToolTip(self.history_note.text())
             self.schedule_images()
         finally:
             self.loading = False
@@ -941,13 +988,52 @@ class Window(QMainWindow):
         self.schedule_images()
         sb = self.feed.verticalScrollBar()
         if value > 0 and value >= sb.maximum() - 500:
-            QTimer.singleShot(0, self.load_more)
+            if self.feed.auto_active:
+                self.request_auto_more()
+            else:
+                QTimer.singleShot(0, self.load_more)
         elif value < sb.maximum() - 1000:
             self.worker.engine.history.clear()
 
     def schedule_images(self):
         if not self.closing and not self.image_timer.isActive():
             self.image_timer.start()
+
+    def auto_state_changed(self, enabled):
+        self.autodoom_button.blockSignals(True)
+        self.autodoom_button.setChecked(enabled)
+        self.autodoom_button.setText("■ Auto Doom" if enabled else "▶ Auto Doom")
+        self.autodoom_button.blockSignals(False)
+        if not enabled:
+            self.auto_more.stop()
+        if not self.closing and hasattr(self,"timer"):
+            self.tick()
+
+    def set_doom_speed(self, value):
+        self.speed_label.setText(f"{value/100:g}×")
+        self.feed.set_auto_speed(value*.6)
+        self.store.set_setting("autodoom_speed",value)
+
+    def request_auto_more(self):
+        if self.feed.auto_active and not self.closing and not self.auto_more.isActive():
+            self.auto_more.start()
+
+    def auto_load_more(self):
+        if self.feed.auto_active and not self.closing and self.mode!="servers":
+            self.load_more()
+
+    def covered(self, post):
+        return is_covered(post,self.revealed,self.auto_cw_enabled)
+
+    def set_auto_cw(self, enabled):
+        self.auto_cw_enabled = bool(enabled)
+        self.store.set_setting("auto_cw",self.auto_cw_enabled)
+        self.delegate.auto_cw = self.auto_cw_enabled
+        if self.detail.post:
+            self.detail.set_post(self.detail.post)
+        self.relayout_feed()
+        self.feed.viewport().update()
+        self.schedule_images()
 
     def visible_images(self):
         if self.demo or self.closing or self.worker.engine.paused.is_set() or self.mode == "servers":
@@ -981,9 +1067,9 @@ class Window(QMainWindow):
         urls = []
         for row, _ in candidates:
             p = self.model.posts[row]
-            if (not p.sensitive and not p.warning) or p.uri in self.revealed:
+            if not self.covered(p):
                 urls.append(preview(p))
-        if self.detail.post and (not self.detail.post.sensitive and not self.detail.post.warning or self.detail.post.uri in self.revealed):
+        if self.detail.post and not self.covered(self.detail.post):
             if self.reader_dialog.isVisible():
                 urls.insert(0, self.detail.image_url())
         self.images.prioritize(urls)
@@ -1029,6 +1115,7 @@ class Window(QMainWindow):
             self.open_post(ix.data(Qt.ItemDataRole.UserRole))
 
     def open_post(self, post):
+        self.feed.set_auto_scroll(False)
         if self.store.setting("rewards", True):
             self.store.stamp_world(post.server)
         self.detail.set_post(post)
@@ -1095,6 +1182,7 @@ class Window(QMainWindow):
         dialog.exec()
 
     def open_url(self, url):
+        self.feed.set_auto_scroll(False)
         safe = web_url(url)
         target=QUrl(safe,QUrl.ParsingMode.StrictMode)
         if safe and target.isValid() and target.scheme()=="https" and not target.userInfo():
@@ -1150,6 +1238,7 @@ class Window(QMainWindow):
             self.refresh_feed()
 
     def toggle_pause(self):
+        self.feed.set_auto_scroll(False)
         if self.worker.engine.paused.is_set():
             self.worker.engine.paused.clear()
             self.pause.setText("Pause")
@@ -1171,14 +1260,21 @@ class Window(QMainWindow):
         if kind in ("posts", "history"):
             self.pending += value
             if not self.model.posts and self.mode != "servers":
-                self.refresh_feed()
+                if self.feed.auto_active:
+                    self.load_more()
+                    self.empty.setVisible(not self.model.posts)
+                    self.update_empty()
+                    self.pending=0
+                    self.latest=self.store.stats()["latest"]
+                else:
+                    self.refresh_feed()
             else:
                 if self.pending:
                     amount = str(self.pending) if self.pending < 1000 else f"{self.pending/1000:.1f}k"
                     self.new_posts.setText(f"+{amount} ↑")
                     self.new_posts.setToolTip(f"{self.pending:,} new finds · Refresh feed")
                 sb = self.feed.verticalScrollBar()
-                if (sb.value() > 0 or kind == "history" and sb.maximum() == 0) and sb.value() >= sb.maximum() - 500 and self.mode != "servers":
+                if (sb.value() > 0 or self.feed.auto_active or kind == "history" and sb.maximum() == 0) and sb.value() >= sb.maximum() - 500 and self.mode != "servers":
                     self.load_more()
         elif kind == "fatal":
             self.worker.engine.paused.set()
@@ -1199,6 +1295,9 @@ class Window(QMainWindow):
         progress=self.store.passport()
         self.passport_action.setText(f"Passport · Lv {progress['level']} {progress['rank']}")
         state = "DEMO" if self.demo else "Paused" if self.worker.engine.paused.is_set() else "Exploring" if self.discover.isChecked() else "Reading"
+        if self.feed.auto_active:
+            waiting=self.feed.verticalScrollBar().value()>=self.feed.verticalScrollBar().maximum()
+            state=("DEMO · " if self.demo else "")+"Auto Doom"+(" · buffering" if waiting else "")
         summary = f"{state} · {s['servers']:,} servers · {s['ready']:,} feeds · {s['posts']:,} posts"
         self.status.setText(QFontMetrics(self.status.font()).elidedText(summary, Qt.TextElideMode.ElideRight, max(100, self.column.width())))
         self.status.setToolTip(safe_tooltip(summary + f"\n{progress['rank']} · {progress['xp']:,} XP" + "\n" + "\n".join(list(self.logs)[-8:])))
@@ -1420,7 +1519,8 @@ class Window(QMainWindow):
         self.heartbeat.stop()
         self.image_timer.stop()
         self.layout_timer.stop()
-        self.feed.stop_scrolling()
+        self.auto_more.stop()
+        self.feed.stop_all_scrolling()
         self.worker.engine.stop.set()
         self.worker.engine.paused.set()
         self.images.pool.clear()

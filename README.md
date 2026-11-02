@@ -39,6 +39,13 @@ preview. See [portable notes](docs/PORTABLE.md) for platform requirements.
   preloading, and a reader on demand. Previews warm two viewports ahead and one
   behind in the direction you scroll; visible images get priority. Touchpad
   pixel motion remains direct, with no extra animation over native momentum.
+- **Auto Doom:** hands-free scrolling with a 0.25×–4× speed slider in the existing
+  footer. It fills from cache and waits for new posts at the end. Wheel scrolling,
+  keyboard navigation, scrollbar movement, or opening a reader pauses it.
+- **Auto CW:** optional automatic reveal of content warnings and sensitive media
+  in the feed and reader. This also permits nearby preview preloading. Turning
+  it off re-covers automatic reveals; manually revealed posts remain revealed.
+  The Hide CW filter continues to exclude matching posts.
 - **MAX:** 32 independent crawler jobs by default, federated public timelines,
   continuous peer discovery, and an unread history buffer. A compact footer
   shows discovery/live/history jobs, requests per second, download rate, and
@@ -61,6 +68,9 @@ pixels wide and resizes down to 460 × 400, with a centered 720-pixel feed limit
 | Key / control | Action |
 | --- | --- |
 | Scroll / More ↓ | Load more cached posts, then request older public pages |
+| Auto Doom / D | Start or pause automatic scrolling |
+| Speed slider | Change Auto Doom speed from 0.25× to 4× |
+| Auto CW | Toggle automatic CW/sensitive-content reveal |
 | Click / Enter | Open the selected post's full reader |
 | Esc | Return from the reader |
 | B | Save or unsave the selected post |
@@ -74,7 +84,10 @@ New finds wait behind the toolbar's count instead of moving your reading
 position. When you reach the end of cached history, unread arrivals join the
 bottom even if their timestamps are newer. R returns to a chronological view.
 Audio, video, and full attachments open in your normal browser.
-Content warnings remain covered until you reveal the post.
+Content warnings remain covered until you reveal the post or enable Auto CW.
+Speed and Auto CW are remembered; Auto Doom starts off on every launch. The
+1× pace is 60 pixels per second. Cached history status is available on More ↓'s
+tooltip; the status line indicates when Auto Doom is buffering.
 
 ## Local by design
 
@@ -132,7 +145,8 @@ see your IP address and the app's User-Agent, as with any direct client.
 Original previews use a 64 MiB memory budget, with another 16 MiB for fitted
 display sizes. Pending image jobs are capped at eight. Fast scrolling replaces
 stale queued image jobs; already-running requests finish normally. Covered CW
-and sensitive media are excluded from preloading until revealed.
+and sensitive media are excluded from preloading until manually revealed or
+the user enables Auto CW. All revealed previews use the same restricted decoder.
 
 Preview isolation currently requires Linux x86-64 or arm64 with seccomp support;
 the packaged policy has been exercised on x86-64 here. Windows, macOS, and

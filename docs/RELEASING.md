@@ -19,10 +19,10 @@ Extract it, then use GitHub's normal new-repository flow or the GitHub CLI:
 ```bash
 git init -b main
 git add .
-git commit -m "Release Activity Bub 0.3.2"
+git commit -m "Release Activity Bub 0.4.0"
 gh repo create activity-bub --public --source . --push
-git tag v0.3.2
-git push origin v0.3.2
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 These commands publish a new public repository under the signed-in account.
@@ -30,7 +30,7 @@ Choose `--private` instead if a private repository is intended. This package
 does not execute those commands for you.
 
 Source-only packaging: `python tools/build_release.py --source-only`.
-Use `--output release/v0.3.2` to stage a version separately, and `--no-isolation`
+Use `--output release/v0.4.0` to stage a version separately, and `--no-isolation`
 only when the required build dependencies are already installed.
 Platform builds go in `release/`; do not commit generated binaries or user data.
 CI uses read-only repository access. Only the draft-release job receives write

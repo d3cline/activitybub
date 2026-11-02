@@ -3,11 +3,14 @@ from contextlib import contextmanager
 import math
 import time
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QListView
 
 
 class SmoothFeedView(QListView):
+    autoChanged = Signal(bool)
+    needsMore = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -19,8 +22,62 @@ class SmoothFeedView(QListView):
         self.motion.setTimerType(Qt.TimerType.PreciseTimer)
         self.motion.setInterval(16)
         self.motion.timeout.connect(self._advance)
+        self.auto_motion = QTimer(self)
+        self.auto_motion.setTimerType(Qt.TimerType.PreciseTimer)
+        self.auto_motion.setInterval(16)
+        self.auto_motion.timeout.connect(self._auto_advance)
+        self.auto_speed = 60.0
+        self._auto_position = 0.0
+        self._auto_tick = 0.0
+        self._last_more = 0.0
         self.verticalScrollBar().valueChanged.connect(self._external_scroll)
-        self.verticalScrollBar().sliderPressed.connect(self.stop_scrolling)
+        self.verticalScrollBar().sliderPressed.connect(self.stop_all_scrolling)
+
+    @property
+    def auto_active(self):
+        return self.auto_motion.isActive()
+
+    def set_auto_scroll(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.auto_active:
+            return
+        self.stop_scrolling()
+        if enabled:
+            self._auto_position = float(self.verticalScrollBar().value())
+            self._auto_tick = time.monotonic()
+            self._last_more = 0.0
+            self.auto_motion.start()
+        else:
+            self.auto_motion.stop()
+        self.autoChanged.emit(enabled)
+
+    def set_auto_speed(self, pixels_per_second):
+        self.auto_speed = max(15.0, min(240.0, float(pixels_per_second)))
+        self._auto_tick = time.monotonic()
+
+    def stop_all_scrolling(self):
+        self.stop_scrolling()
+        self.set_auto_scroll(False)
+
+    def _auto_advance(self):
+        if not self.auto_active:
+            return
+        now = time.monotonic()
+        elapsed = min(.1, max(0.0, now-self._auto_tick))
+        self._auto_tick = now
+        if (not self.isVisible() or self.window().isMinimized()
+                or QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None):
+            return
+        bar = self.verticalScrollBar()
+        self._auto_position = self._clamp(self._auto_position + self.auto_speed*elapsed)
+        self._writing = True
+        try:
+            bar.setValue(round(self._auto_position))
+        finally:
+            self._writing = False
+        if bar.maximum()-bar.value()<=max(500,self.viewport().height()) and now-self._last_more>=.25:
+            self._last_more = now
+            self.needsMore.emit()
 
     def stop_scrolling(self):
         self.motion.stop()
@@ -28,13 +85,14 @@ class SmoothFeedView(QListView):
 
     def _external_scroll(self, _):
         if not self._writing and not self._preserving:
-            self.stop_scrolling()
+            self.stop_all_scrolling()
 
     def _clamp(self, value):
         bar = self.verticalScrollBar()
         return max(bar.minimum(), min(bar.maximum(), value))
 
     def wheelEvent(self, event):
+        self.set_auto_scroll(False)
         # High-resolution gestures already carry pixel motion and/or native
         # momentum. Do not put another easing animation on top of them.
         if event.pixelDelta().y() and not event.modifiers():
@@ -95,15 +153,18 @@ class SmoothFeedView(QListView):
                 self._position = float(self.verticalScrollBar().value())
                 self._target = self._clamp(self._position + remaining)
                 self._last_tick = time.monotonic()
+            if self.auto_active:
+                self._auto_position = float(self.verticalScrollBar().value())
+                self._auto_tick = time.monotonic()
 
     def mousePressEvent(self, event):
-        self.stop_scrolling()
+        self.stop_all_scrolling()
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
-        self.stop_scrolling()
+        self.stop_all_scrolling()
         super().keyPressEvent(event)
 
     def hideEvent(self, event):
-        self.stop_scrolling()
+        self.stop_all_scrolling()
         super().hideEvent(event)

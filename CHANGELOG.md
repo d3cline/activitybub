@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+
+- Auto Doom button in the existing feed footer, with a saved 0.25×–4× speed
+  slider and D shortcut. Scrolling starts only when explicitly enabled.
+- Hands-free scrolling preloads more posts, waits for live/history arrivals,
+  and resumes without moving back to older screen coordinates after image
+  resizing or rolling-cache trims. Manual scrolling and opening a reader pause it.
+- Auto CW opt-in reveals flagged posts and sensitive media in both feed and
+  reader, including nearby preview loading. Switching it off re-covers automatic
+  reveals while preserving manual reveals. Hide CW still filters posts out.
+- Auto CW and speed persist locally; Auto Doom remains off on every launch.
+- Bounded fill requests, capped catch-up after UI stalls, and no scrolling
+  behind modal dialogs or while minimized. Existing image isolation is retained.
+
 ## 0.3.2
 
 - Security hardening: disposable Linux image workers with an architecture-checked
